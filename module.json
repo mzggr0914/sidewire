@@ -1,4 +1,4 @@
 {
   "metamodule": false,
-  "summary": "ADB-independent secure native bridge for controlling rooted Android devices over LAN or VPN."
+  "summary": "ADB-independent Android bridge with secure shell, file transfer, clipboard, and TCP forwarding."
 }
