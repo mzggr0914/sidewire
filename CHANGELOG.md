@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.0.1
+
+- add KernelSU Modules Repo metadata and publish the stable release from the official organization
+
 ## 1.0.0
 
 - add protocol 1.2 receive-window flow control for file chunks while preserving protocol 1.1 fallback behavior
