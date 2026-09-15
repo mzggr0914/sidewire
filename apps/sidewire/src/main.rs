@@ -132,6 +132,9 @@ enum Command {
         /// Send a synthetic command sequence to verify the PTY path.
         #[arg(long)]
         probe: bool,
+        /// Run a command directly instead of opening an interactive shell.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
     },
     Push {
         #[arg(short = 's', long)]
@@ -333,15 +336,21 @@ async fn main() -> Result<()> {
             run_as,
             raw,
             probe,
+            command,
         } => {
-            pty::run_shell(
-                &control,
-                config::resolve_device(&app_config, device),
-                config::resolve_run_as(&app_config, run_as, RunAs::Shell),
-                raw,
-                probe,
-            )
-            .await
+            let device = config::resolve_device(&app_config, device);
+            let run_as = config::resolve_run_as(&app_config, run_as, RunAs::Shell);
+            let mut command = command.into_iter();
+            match command.next() {
+                None => pty::run_shell(&control, device, run_as, raw, probe).await,
+                Some(program) => {
+                    if raw || probe {
+                        bail!("--raw and --probe are only valid for interactive shell mode");
+                    }
+                    client::run_exec_client(&control, device, run_as, program, command.collect())
+                        .await
+                }
+            }
         }
         Command::Push {
             device,
