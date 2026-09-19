@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 1.0.2
+- can run commands through shell
+
 ## 1.0.1
 
 - add KernelSU Modules Repo metadata and publish the stable release from the official organization
