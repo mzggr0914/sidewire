@@ -1,0 +1,14 @@
+schemaVersion: 1
+id: sidewire
+name: sidewire
+summary: native bridge for controlling rooted Android devices from Windows, macOS, or Linux. It does not rely on ADB.
+description: README.md
+license: GPL-3.0
+homepage: https://github.com/KernelSU-Modules-Repo/sidewire
+support: https://github.com/KernelSU-Modules-Repo/sidewire/issues
+tags: [tools]
+metamodule: false
+
+authors:
+  - name: mzggr0914
+    url: https://github.com/mzggr0914
