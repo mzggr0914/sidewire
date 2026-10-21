@@ -1,4 +1,0 @@
-{
-  "metamodule": false,
-  "summary": "ADB-independent Android bridge with secure shell, file transfer, clipboard, and TCP forwarding."
-}
