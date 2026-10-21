@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.0.3
+
+- re-release 1.0.2 with release immutability enabled; no functional changes
+
 ## 1.0.2
 - can run commands through shell
 
