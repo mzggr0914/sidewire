@@ -2,6 +2,8 @@
 
 [한국어](README.ko.md)
 
+KernelSU Module URL: https://modules.kernelsu.org/en/modules/sidewire/
+
 SideWire is a native bridge for controlling rooted Android devices from Windows, macOS, or Linux. It does not rely on ADB.
 
 It provides a Rust daemon installed as a KernelSU module and a Rust CLI/server on the host.
