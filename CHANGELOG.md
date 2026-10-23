@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.0.4
+
+- correct the documented wire protocol version to 1.2 in both READMEs
+- update the module homepage and support links to the current repository
+
 ## 1.0.3
 
 - re-release 1.0.2 with release immutability enabled; no functional changes
