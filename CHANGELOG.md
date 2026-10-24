@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.0.5
+
+- allow single-file pull into an existing local directory while preserving the remote file name
+
 ## 1.0.4
 
 - correct the documented wire protocol version to 1.2 in both READMEs

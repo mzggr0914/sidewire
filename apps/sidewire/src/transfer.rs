@@ -45,6 +45,31 @@ fn absolute_output(path: PathBuf) -> Result<PathBuf> {
     }
 }
 
+async fn pull_file_destination(remote: &str, local: PathBuf) -> Result<PathBuf> {
+    let metadata = match tokio::fs::metadata(&local).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(local),
+        Err(error) => {
+            return Err(error).with_context(|| format!("inspect local path {}", local.display()));
+        }
+    };
+    if !metadata.is_dir() {
+        return Ok(local);
+    }
+
+    let file_name = remote
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .context("remote file path does not have a file name")?;
+    let mut components = Path::new(file_name).components();
+    let file_name = match (components.next(), components.next()) {
+        (Some(Component::Normal(name)), None) => name,
+        _ => bail!("remote file path does not have a valid local file name: {remote}"),
+    };
+    Ok(local.join(file_name))
+}
+
 fn remote_join(base: &str, relative: &Path) -> Result<String> {
     let mut output = if base == "/" {
         "/".to_owned()
@@ -355,6 +380,7 @@ pub(super) async fn run_pull(
     let jobs = transfer_jobs(jobs);
     let local = absolute_output(local)?;
     if !remote_is_dir(control, device.clone(), run_as, &remote).await? {
+        let local = pull_file_destination(&remote, local).await?;
         let bytes = pull_file(control, device, run_as, remote, &local).await?;
         println!("pulled 1 file ({bytes} bytes)");
         return Ok(());
@@ -393,4 +419,112 @@ pub(super) async fn run_pull(
         directories.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{absolute_output, pull_file_destination};
+    use std::path::PathBuf;
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "sidewire-pull-test-{:032x}",
+                rand::random::<u128>()
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn single_file_pull_into_current_directory_keeps_remote_name() {
+        let name = "duck_detector_report_SM-A325N_20261024_101858.txt";
+        let remote = format!("/sdcard/Download/{name}");
+        for destination in [".", "./"] {
+            let local = absolute_output(PathBuf::from(destination)).unwrap();
+            assert_eq!(
+                pull_file_destination(&remote, local.clone()).await.unwrap(),
+                local.join(name)
+            );
+        }
+        #[cfg(windows)]
+        {
+            let local = absolute_output(PathBuf::from(".\\")).unwrap();
+            assert_eq!(
+                pull_file_destination(&remote, local.clone()).await.unwrap(),
+                local.join(name)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn existing_directory_preserves_spaces_and_unicode_in_remote_name() {
+        let directory = TestDirectory::new();
+        let name = "기기 보고서.txt";
+        let local = directory.0.join("downloads.txt");
+        tokio::fs::create_dir(&local).await.unwrap();
+        assert_eq!(
+            pull_file_destination(&format!("/sdcard/Download/{name}"), local.clone())
+                .await
+                .unwrap(),
+            local.join(name)
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_file_and_missing_destinations_keep_the_requested_path() {
+        let directory = TestDirectory::new();
+        let existing = directory.0.join("renamed.txt");
+        tokio::fs::write(&existing, b"existing contents")
+            .await
+            .unwrap();
+        for local in [
+            existing.clone(),
+            directory.0.join("newfolder"),
+            directory.0.join("missing-parent").join("renamed.txt"),
+        ] {
+            assert_eq!(
+                pull_file_destination("/sdcard/Download/report.txt", local.clone())
+                    .await
+                    .unwrap(),
+                local
+            );
+        }
+        assert_eq!(
+            tokio::fs::read(&existing).await.unwrap(),
+            b"existing contents"
+        );
+        assert!(!directory.0.join("newfolder").exists());
+    }
+
+    #[tokio::test]
+    async fn directory_destination_rejects_missing_or_special_remote_file_names() {
+        let directory = TestDirectory::new();
+        for remote in ["", "/", "/sdcard/Download/", "/sdcard/.", "/sdcard/.."] {
+            assert!(
+                pull_file_destination(remote, directory.0.clone())
+                    .await
+                    .is_err(),
+                "unexpectedly accepted {remote:?}"
+            );
+        }
+        #[cfg(windows)]
+        for remote in ["/sdcard/..\\escape.txt", "/sdcard/C:escape.txt"] {
+            assert!(
+                pull_file_destination(remote, directory.0.clone())
+                    .await
+                    .is_err(),
+                "unexpectedly accepted {remote:?}"
+            );
+        }
+    }
 }

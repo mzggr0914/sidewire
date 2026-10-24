@@ -65,10 +65,13 @@ sidewire exec --as root id
 sidewire clipboard push
 sidewire clipboard pull
 sidewire push .\build /data/local/tmp/build
+sidewire pull /sdcard/Download/report.txt ./
 sidewire pull /sdcard/MyFolder .\MyFolder
 ```
 
 `clipboard push` copies the PC clipboard to Android; `pull` does the reverse. Recursive `push`/`pull` transfers use up to 4 concurrent files by default; use `--jobs 1..16` to tune concurrency. Protocol 1.2 peers also apply receive-window flow control to file chunks, while older peers keep the existing fallback behavior.
+
+For a single-file `pull`, an existing local directory keeps the remote file name. Otherwise, the destination is used as the output file path. An existing output file is overwritten.
 
 ## Connection modes
 
