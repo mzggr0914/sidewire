@@ -1,10 +1,12 @@
 # Security
 
+[한국어](SECURITY.ko.md)
+
 SideWire can expose root-capable Android operations over the network, so security bugs should not be filed as public issues before a fix is available.
 
 ## Supported versions
 
-The latest `0.9.x` release is supported while SideWire is pre-1.0. Older pre-release versions may not receive security fixes.
+Security fixes are provided for the latest stable release only. Older releases and prereleases are not maintained for security fixes. Please use the [latest stable release](https://github.com/mzggr0914/sidewire/releases/latest).
 
 ## Reporting a vulnerability
 

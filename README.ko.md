@@ -89,7 +89,7 @@ Secure 모드는 짧게 유지되는 페어링 PIN에 SPAKE2를 사용하고, �
 
 신뢰할 수 있는 개발용 네트워크를 위한 plaintext 모드도 있지만 양쪽에서 직접 켜야 하며, secure 연결이 자동으로 plaintext로 내려가지는 않습니다.
 
-보안 취약점 제보 방법은 [SECURITY.md](SECURITY.md)를 참고하세요.
+보안 취약점 제보 방법은 [SECURITY.ko.md](SECURITY.ko.md)를 참고하세요.
 
 ## 빌드
 

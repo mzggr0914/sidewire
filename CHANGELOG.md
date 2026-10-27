@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.0.6
+
+- use process-specific temporary files when trimming the Android daemon log
+- standardize CI and release builds on pnpm 12.3.4 through the pnpm setup action
+- enforce Prettier formatting separately from Rust formatting and format the clipboard helper and supported sources
+- update the security support policy to the latest stable release and add a Korean translation
+
 ## 1.0.5
 
 - allow single-file pull into an existing local directory while preserving the remote file name
