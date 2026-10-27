@@ -6,6 +6,7 @@
 
 - use process-specific temporary files when trimming the Android daemon log
 - standardize CI and release builds on pnpm 12.3.4 through the pnpm setup action
+- support native pnpm executables as well as command shims in Windows build scripts
 - enforce Prettier formatting separately from Rust formatting and format the clipboard helper and supported sources
 - update the security support policy to the latest stable release and add a Korean translation
 

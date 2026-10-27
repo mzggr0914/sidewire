@@ -24,8 +24,8 @@ if (-not $SkipWebUi) {
     Write-Host "==> Building KernelSU WebUI"
     Push-Location (Join-Path $root "webui")
     try {
-        Invoke-Checked { pnpm.cmd install --frozen-lockfile } "pnpm install"
-        Invoke-Checked { pnpm.cmd build } "WebUI build"
+        Invoke-Checked { pnpm install --frozen-lockfile } "pnpm install"
+        Invoke-Checked { pnpm build } "WebUI build"
     } finally {
         Pop-Location
     }
