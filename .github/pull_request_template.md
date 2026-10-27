@@ -4,6 +4,7 @@ Briefly describe the change and why it is needed.
 
 ## Checks
 
+- [ ] `pnpm format:check`
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings`
 - [ ] `cargo test --workspace`

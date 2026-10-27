@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if ! command -v cc >/dev/null 2>&1; then
+if ! command -v cc > /dev/null 2>&1; then
   echo "A C compiler is required. On Ubuntu: sudo apt install build-essential" >&2
   exit 1
 fi
 
-if ! command -v cargo >/dev/null 2>&1; then
-  if ! command -v curl >/dev/null 2>&1; then
+if ! command -v cargo > /dev/null 2>&1; then
+  if ! command -v curl > /dev/null 2>&1; then
     echo "curl is required to install rustup." >&2
     exit 1
   fi

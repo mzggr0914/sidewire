@@ -26,8 +26,8 @@ if [ -z "$VERSION" ]; then
 fi
 ARCH="$(uname -m)"
 case "$ARCH" in
-  x86_64|amd64) ARCH=x86_64 ;;
-  aarch64|arm64) ARCH=aarch64 ;;
+  x86_64 | amd64) ARCH=x86_64 ;;
+  aarch64 | arm64) ARCH=aarch64 ;;
 esac
 
 SOURCE="$CARGO_TARGET_DIR/release/sidewire"
@@ -43,6 +43,6 @@ chmod +x "$DEST"
 
 echo "==> Linux release artifact"
 ls -lh "$DEST"
-if command -v sha256sum >/dev/null 2>&1; then
+if command -v sha256sum > /dev/null 2>&1; then
   sha256sum "$DEST"
 fi

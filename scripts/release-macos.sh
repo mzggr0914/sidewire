@@ -27,9 +27,12 @@ fi
 
 ARCH="$(uname -m)"
 case "$ARCH" in
-  arm64|aarch64) ARCH=arm64 ;;
-  x86_64|amd64) ARCH=x86_64 ;;
-  *) echo "Unsupported macOS architecture: $ARCH" >&2; exit 1 ;;
+  arm64 | aarch64) ARCH=arm64 ;;
+  x86_64 | amd64) ARCH=x86_64 ;;
+  *)
+    echo "Unsupported macOS architecture: $ARCH" >&2
+    exit 1
+    ;;
 esac
 
 SOURCE="$CARGO_TARGET_DIR/release/sidewire"
@@ -44,6 +47,6 @@ chmod +x "$DEST"
 
 echo "==> macOS release artifact"
 ls -lh "$DEST"
-if command -v shasum >/dev/null 2>&1; then
+if command -v shasum > /dev/null 2>&1; then
   shasum -a 256 "$DEST"
 fi

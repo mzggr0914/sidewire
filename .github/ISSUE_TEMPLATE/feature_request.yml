@@ -1,6 +1,6 @@
 name: Feature request
 description: Suggest a focused SideWire improvement
-title: "[Feature] "
+title: '[Feature] '
 labels: [enhancement]
 body:
   - type: textarea

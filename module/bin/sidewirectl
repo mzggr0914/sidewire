@@ -17,82 +17,109 @@ SHELL_STATE_DIR="/data/local/tmp/sidewire"
 CLIPBOARD_HELPER="$SHELL_STATE_DIR/sidewire-clipboard.jar"
 export KSU_MODULE=sidewire
 
-pid_is_sidewired(){
+pid_is_sidewired() {
   pid="$1"
-  case "$pid" in ''|*[!0-9]*) return 1;; esac
-  [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = "sidewired" ]
+  case "$pid" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$(cat "/proc/$pid/comm" 2> /dev/null)" = "sidewired" ]
 }
-cleanup_extra_daemons(){
-  keep="$1"; killed=0
-  for pid in $(pidof sidewired 2>/dev/null); do
+cleanup_extra_daemons() {
+  keep="$1"
+  killed=0
+  for pid in $(pidof sidewired 2> /dev/null); do
     [ -n "$keep" ] && [ "$pid" = "$keep" ] && continue
-    if pid_is_sidewired "$pid"; then kill "$pid" 2>/dev/null; killed=1; fi
+    if pid_is_sidewired "$pid"; then
+      kill "$pid" 2> /dev/null
+      killed=1
+    fi
   done
   [ "$killed" -eq 0 ] || sleep 1
 }
 
-ensure_state(){
+ensure_state() {
   mkdir -p "$STATE_DIR" "$PAIRS_DIR"
-  chmod 0700 "$STATE_DIR" "$PAIRS_DIR" 2>/dev/null
+  chmod 0700 "$STATE_DIR" "$PAIRS_DIR" 2> /dev/null
   if [ -d "$LEGACY_STATE/paired_hosts" ]; then
     for old in "$LEGACY_STATE/paired_hosts"/*.pair; do
       [ -f "$old" ] || continue
       dest="$PAIRS_DIR/${old##*/}"
-      [ -f "$dest" ] || cp "$old" "$dest" 2>/dev/null
+      [ -f "$dest" ] || cp "$old" "$dest" 2> /dev/null
     done
   fi
-  chmod 0600 "$PAIRS_DIR"/*.pair 2>/dev/null
+  chmod 0600 "$PAIRS_DIR"/*.pair 2> /dev/null
 }
-provision_clipboard_helper(){
+provision_clipboard_helper() {
   mkdir -p "$SHELL_STATE_DIR" || return 1
-  chown 0:2000 "$SHELL_STATE_DIR" 2>/dev/null
-  chmod 0750 "$SHELL_STATE_DIR" 2>/dev/null
-  chcon u:object_r:shell_data_file:s0 "$SHELL_STATE_DIR" 2>/dev/null || true
+  chown 0:2000 "$SHELL_STATE_DIR" 2> /dev/null
+  chmod 0750 "$SHELL_STATE_DIR" 2> /dev/null
+  chcon u:object_r:shell_data_file:s0 "$SHELL_STATE_DIR" 2> /dev/null || true
   if [ -f "$CLIPBOARD_SOURCE" ]; then
     if [ ! -f "$CLIPBOARD_HELPER" ] || ! cmp -s "$CLIPBOARD_SOURCE" "$CLIPBOARD_HELPER"; then
       cp "$CLIPBOARD_SOURCE" "$CLIPBOARD_HELPER" || return 1
     fi
-    chown 0:2000 "$CLIPBOARD_HELPER" 2>/dev/null
-    chmod 0440 "$CLIPBOARD_HELPER" 2>/dev/null
-    chcon u:object_r:shell_data_file:s0 "$CLIPBOARD_HELPER" 2>/dev/null || true
+    chown 0:2000 "$CLIPBOARD_HELPER" 2> /dev/null
+    chmod 0440 "$CLIPBOARD_HELPER" 2> /dev/null
+    chcon u:object_r:shell_data_file:s0 "$CLIPBOARD_HELPER" 2> /dev/null || true
   else
     rm -f "$CLIPBOARD_HELPER"
   fi
 }
 
-get(){ ksud module config get "$1" 2>/dev/null; }
-setv(){ ksud module config set "$1" "$2" >/dev/null; }
-set_many(){
-  [ $(( $# % 2 )) -eq 0 ] || { echo "set-many expects KEY VALUE pairs" >&2; return 2; }
+get() { ksud module config get "$1" 2> /dev/null; }
+setv() { ksud module config set "$1" "$2" > /dev/null; }
+set_many() {
+  [ $(($# % 2)) -eq 0 ] || {
+    echo "set-many expects KEY VALUE pairs" >&2
+    return 2
+  }
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      host|port|name|mode|security|autostart|pairing_port) setv "$1" "$2" || return $?;;
-      *) echo "unsupported SideWire setting: $1" >&2; return 2;;
+      host | port | name | mode | security | autostart | pairing_port) setv "$1" "$2" || return $? ;;
+      *)
+        echo "unsupported SideWire setting: $1" >&2
+        return 2
+        ;;
     esac
     shift 2
   done
 }
-write_config(){
+write_config() {
   ensure_state
   provision_clipboard_helper || true
-  mode="$(get mode)"; [ -n "$mode" ] || mode=outbound
-  host="$(get host)"; [ -n "$host" ] || host=127.0.0.1
-  port="$(get port)"; [ -n "$port" ] || port=58321
-  name="$(get name)"; [ -n "$name" ] || name="$(getprop ro.product.model)"
-  security="$(get security)"; [ -n "$security" ] || security=secure
-  pairing_port="$(get pairing_port)"; [ -n "$pairing_port" ] || pairing_port=58323
+  mode="$(get mode)"
+  [ -n "$mode" ] || mode=outbound
+  host="$(get host)"
+  [ -n "$host" ] || host=127.0.0.1
+  port="$(get port)"
+  [ -n "$port" ] || port=58321
+  name="$(get name)"
+  [ -n "$name" ] || name="$(getprop ro.product.model)"
+  security="$(get security)"
+  [ -n "$security" ] || security=secure
+  pairing_port="$(get pairing_port)"
+  [ -n "$pairing_port" ] || pairing_port=58323
   device_id="$(get device_id)"
   if [ -z "$device_id" ]; then
-    device_id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-')"
-    [ -n "$device_id" ] || device_id="$(dd if=/dev/urandom bs=16 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+    device_id="$(cat /proc/sys/kernel/random/uuid 2> /dev/null | tr -d '-')"
+    [ -n "$device_id" ] || device_id="$(dd if=/dev/urandom bs=16 count=1 2> /dev/null | od -An -tx1 | tr -d ' \n')"
     setv device_id "$device_id"
   fi
-  { echo "mode=$mode"; echo "host=$host"; echo "port=$port"; echo "name=$name"; echo "device_id=$device_id"; echo "security=$security"; echo "pairing_port=$pairing_port"; echo "pairing_file=$PAIRING_FILE"; echo "pairs_dir=$PAIRS_DIR"; echo "clipboard_helper=$CLIPBOARD_HELPER"; } > "$CONFIG"
+  {
+    echo "mode=$mode"
+    echo "host=$host"
+    echo "port=$port"
+    echo "name=$name"
+    echo "device_id=$device_id"
+    echo "security=$security"
+    echo "pairing_port=$pairing_port"
+    echo "pairing_file=$PAIRING_FILE"
+    echo "pairs_dir=$PAIRS_DIR"
+    echo "clipboard_helper=$CLIPBOARD_HELPER"
+  } > "$CONFIG"
   chmod 0600 "$CONFIG"
 }
-pair(){
+pair() {
   ensure_state
-  bytes="$(od -An -N3 -tu1 /dev/urandom 2>/dev/null)"
+  bytes="$(od -An -N3 -tu1 /dev/urandom 2> /dev/null)"
   set -- $bytes
   if [ "$#" -eq 3 ]; then
     raw=$(($1 * 65536 + $2 * 256 + $3))
@@ -101,56 +128,67 @@ pair(){
   fi
   pin="$(printf '%06d' $((raw % 1000000)))"
   now="$(date +%s)"
-  { echo "pin=$pin"; echo "until=$((now + 60))"; } > "$PAIRING_FILE"
+  {
+    echo "pin=$pin"
+    echo "until=$((now + 60))"
+  } > "$PAIRING_FILE"
   chmod 0600 "$PAIRING_FILE"
   echo "$pin"
 }
-paired(){
+paired() {
   ensure_state
   found=0
   for file in "$PAIRS_DIR"/*.pair; do
     [ -f "$file" ] || continue
     found=1
-    id="${file##*/}"; id="${id%.pair}"
+    id="${file##*/}"
+    id="${id%.pair}"
     name="$(sed -n 's/^name=//p' "$file" | head -n 1)"
     echo "$id|$name"
   done
   [ "$found" -eq 1 ] || true
 }
-unpair(){
+unpair() {
   ensure_state
   id="$1"
-  case "$id" in *[!0-9a-fA-F]*|'') echo "invalid host id" >&2; exit 2;; esac
+  case "$id" in *[!0-9a-fA-F]* | '')
+    echo "invalid host id" >&2
+    exit 2
+    ;;
+  esac
   file="$PAIRS_DIR/$id.pair"
-  [ -f "$file" ] || { echo "paired host not found" >&2; exit 1; }
+  [ -f "$file" ] || {
+    echo "paired host not found" >&2
+    exit 1
+  }
   rm -f "$file"
 }
-request_action(){
+request_action() {
   ensure_state
   printf '%s\n' "$1" > "$ACTION_FILE" || return 1
   chmod 0600 "$ACTION_FILE"
   ksud module action sidewire
 }
-trim_log(){
+trim_log() {
   [ -f "$LOGFILE" ] || return 0
-  size="$(wc -c < "$LOGFILE" 2>/dev/null)"
-  case "$size" in ''|*[!0-9]*) return 0;; esac
+  size="$(wc -c < "$LOGFILE" 2> /dev/null)"
+  case "$size" in '' | *[!0-9]*) return 0 ;; esac
   [ "$size" -le "$LOG_MAX_BYTES" ] && return 0
-  tmp="$LOGFILE.trim.$"
-  if tail -c "$LOG_KEEP_BYTES" "$LOGFILE" > "$tmp" 2>/dev/null; then
-    chmod 0600 "$tmp" 2>/dev/null
+  tmp="$LOGFILE.trim.$$"
+  if tail -c "$LOG_KEEP_BYTES" "$LOGFILE" > "$tmp" 2> /dev/null; then
+    chmod 0600 "$tmp" 2> /dev/null
     mv -f "$tmp" "$LOGFILE"
   else
     rm -f "$tmp"
   fi
 }
 
-start_daemon(){
+start_daemon() {
   ensure_state
   [ -x "$DAEMON" ] || exit 1
   current=""
   if [ -f "$PIDFILE" ]; then
-    pid="$(cat "$PIDFILE" 2>/dev/null)"
+    pid="$(cat "$PIDFILE" 2> /dev/null)"
     if pid_is_sidewired "$pid"; then current="$pid"; else rm -f "$PIDFILE"; fi
   fi
   cleanup_extra_daemons "$current"
@@ -158,21 +196,21 @@ start_daemon(){
   [ -n "$current" ] && exit 0
   write_config
   trim_log
-  "$DAEMON" --config "$CONFIG" >>"$LOGFILE" 2>&1 &
+  "$DAEMON" --config "$CONFIG" >> "$LOGFILE" 2>&1 &
   echo $! > "$PIDFILE"
 }
-unpair_all(){
+unpair_all() {
   ensure_state
   rm -f "$PAIRS_DIR"/*.pair "$PAIRING_FILE"
 }
-stop_daemon(){
+stop_daemon() {
   cleanup_extra_daemons ""
   rm -f "$PIDFILE" "$LEGACY_PIDFILE"
 }
-status(){
-  pid="$(cat "$PIDFILE" 2>/dev/null)"
+status() {
+  pid="$(cat "$PIDFILE" 2> /dev/null)"
   if pid_is_sidewired "$pid"; then
-    ctx="$(cat "/proc/$pid/attr/current" 2>/dev/null)"
+    ctx="$(cat "/proc/$pid/attr/current" 2> /dev/null)"
     echo "running pid=$pid context=$ctx"
   else
     rm -f "$PIDFILE"
@@ -180,21 +218,34 @@ status(){
   fi
 }
 case "$1" in
-  get) get "$2";;
-  set) setv "$2" "$3";;
-  set-many) shift; set_many "$@";;
-  start) request_action start;;
-  stop) request_action stop;;
-  restart) request_action restart;;
-  _start) start_daemon;;
-  _stop) stop_daemon;;
-  _restart) stop_daemon; sleep 1; start_daemon;;
-  status) status;;
-  config) write_config; cat "$CONFIG";;
-  pair) pair;;
-  paired) paired;;
-  unpair) unpair "$2";;
-  unpair-all) unpair_all;;
-  log) [ -f "$LOGFILE" ] && tail -n 120 "$LOGFILE" 2>/dev/null || true;;
-  *) echo "usage: sidewirectl get|set|set-many|start|stop|restart|status|config|pair|paired|unpair|unpair-all|log"; exit 2;;
+  get) get "$2" ;;
+  set) setv "$2" "$3" ;;
+  set-many)
+    shift
+    set_many "$@"
+    ;;
+  start) request_action start ;;
+  stop) request_action stop ;;
+  restart) request_action restart ;;
+  _start) start_daemon ;;
+  _stop) stop_daemon ;;
+  _restart)
+    stop_daemon
+    sleep 1
+    start_daemon
+    ;;
+  status) status ;;
+  config)
+    write_config
+    cat "$CONFIG"
+    ;;
+  pair) pair ;;
+  paired) paired ;;
+  unpair) unpair "$2" ;;
+  unpair-all) unpair_all ;;
+  log) [ -f "$LOGFILE" ] && tail -n 120 "$LOGFILE" 2> /dev/null || true ;;
+  *)
+    echo "usage: sidewirectl get|set|set-many|start|stop|restart|status|config|pair|paired|unpair|unpair-all|log"
+    exit 2
+    ;;
 esac

@@ -1,0 +1,21 @@
+{
+  "plugins": ["prettier-plugin-java", "prettier-plugin-sh"],
+  "printWidth": 100,
+  "singleQuote": true,
+  "proseWrap": "preserve",
+  "endOfLine": "lf",
+  "overrides": [
+    {
+      "files": "*.java",
+      "options": {
+        "tabWidth": 4
+      }
+    },
+    {
+      "files": "module/bin/sidewirectl",
+      "options": {
+        "parser": "sh"
+      }
+    }
+  ]
+}

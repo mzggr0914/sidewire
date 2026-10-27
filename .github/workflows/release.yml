@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    tags: ['v*']
 
 permissions:
   contents: read
@@ -13,11 +13,19 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-node@v7
+      - uses: pnpm/setup@v2
         with:
-          node-version: 24
-      - name: Install pnpm
-        run: npm install --global pnpm@12.3.4
+          version: 12.3.4
+          runtime: node@24
+          working-directory: webui
+          install: false
+      - name: Verify pnpm version
+        shell: pwsh
+        run: |
+          $version = pnpm --version
+          if ($LASTEXITCODE -ne 0 -or $version.Trim() -ne '12.3.4') {
+            throw "Expected pnpm 12.3.4, got $version"
+          }
       - uses: actions/setup-java@v5
         with:
           distribution: temurin

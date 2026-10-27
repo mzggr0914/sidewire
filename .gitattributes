@@ -1,5 +1,12 @@
 * text=auto
+.editorconfig text eol=lf
+.gitignore text eol=lf
+.prettierignore text eol=lf
 *.rs text eol=lf
+*.java text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
 *.toml text eol=lf
 *.lock text eol=lf
 *.sh text eol=lf

@@ -8,6 +8,7 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 
 public final class ClipboardHelper {
+
     private static final String SHELL_PACKAGE = "com.android.shell";
     private static final int MAX_TEXT_BYTES = 4 * 1024 * 1024;
     private static final int OP_GET = 1;
@@ -20,12 +21,14 @@ public final class ClipboardHelper {
 
     private static Object clipboardService() throws Exception {
         Class<?> serviceManager = Class.forName("android.os.ServiceManager");
-        Object binder = serviceManager.getMethod("getService", String.class)
-                .invoke(null, "clipboard");
+        Object binder = serviceManager
+            .getMethod("getService", String.class)
+            .invoke(null, "clipboard");
         if (binder == null) throw new IllegalStateException("clipboard service is unavailable");
         Class<?> iBinder = Class.forName("android.os.IBinder");
         Class<?> stub = Class.forName("android.content.IClipboard$Stub");
-        Method asInterface = stub.getDeclaredMethod("asInterface", iBinder);        asInterface.setAccessible(true);
+        Method asInterface = stub.getDeclaredMethod("asInterface", iBinder);
+        asInterface.setAccessible(true);
         return asInterface.invoke(null, binder);
     }
 
@@ -52,7 +55,8 @@ public final class ClipboardHelper {
     }
 
     private static Object[] argumentsFor(Method method, Object clip) throws Exception {
-        Class<?>[] types = method.getParameterTypes();        Object[] args = new Object[types.length];
+        Class<?>[] types = method.getParameterTypes();
+        Object[] args = new Object[types.length];
         boolean packageSet = false;
         boolean clipSet = false;
         int intIndex = 0;
@@ -78,9 +82,11 @@ public final class ClipboardHelper {
 
     private static Object newPlainText(String text) throws Exception {
         Class<?> clipData = Class.forName("android.content.ClipData");
-        return clipData.getMethod("newPlainText", CharSequence.class, CharSequence.class)
-                .invoke(null, "SideWire", text);
+        return clipData
+            .getMethod("newPlainText", CharSequence.class, CharSequence.class)
+            .invoke(null, "SideWire", text);
     }
+
     private static String getText(Object service, Method getPrimaryClip) throws Exception {
         Object clip = getPrimaryClip.invoke(service, argumentsFor(getPrimaryClip, null));
         if (clip == null) return "";
@@ -92,13 +98,14 @@ public final class ClipboardHelper {
         return text == null ? "" : text.toString();
     }
 
-    private static void setText(Object service, Method setPrimaryClip, String text) throws Exception {
+    private static void setText(Object service, Method setPrimaryClip, String text)
+        throws Exception {
         Object clip = newPlainText(text);
         setPrimaryClip.invoke(service, argumentsFor(setPrimaryClip, clip));
     }
 
     private static void clear(Object service, Method clearPrimaryClip, Method setPrimaryClip)
-            throws Exception {
+        throws Exception {
         if (clearPrimaryClip != null) {
             clearPrimaryClip.invoke(service, argumentsFor(clearPrimaryClip, null));
         } else {
@@ -107,7 +114,8 @@ public final class ClipboardHelper {
     }
 
     private static String readStdin() throws Exception {
-        InputStreamReader reader = new InputStreamReader(System.in, StandardCharsets.UTF_8);        StringBuilder text = new StringBuilder();
+        InputStreamReader reader = new InputStreamReader(System.in, StandardCharsets.UTF_8);
+        StringBuilder text = new StringBuilder();
         char[] buffer = new char[8192];
         int count;
         while ((count = reader.read(buffer)) != -1) text.append(buffer, 0, count);
@@ -115,7 +123,7 @@ public final class ClipboardHelper {
     }
 
     private static void writeResponse(DataOutputStream output, int status, byte[] payload)
-            throws Exception {
+        throws Exception {
         output.writeByte(status);
         output.writeInt(payload.length);
         output.write(payload);
@@ -123,7 +131,8 @@ public final class ClipboardHelper {
     }
 
     private static void writeError(DataOutputStream output, Throwable error) throws Exception {
-        String message = error.getClass().getSimpleName() + ": " + String.valueOf(error.getMessage());
+        String message =
+            error.getClass().getSimpleName() + ": " + String.valueOf(error.getMessage());
         byte[] payload = message.getBytes(StandardCharsets.UTF_8);
         if (payload.length > MAX_TEXT_BYTES) {
             byte[] truncated = new byte[MAX_TEXT_BYTES];
@@ -136,7 +145,8 @@ public final class ClipboardHelper {
     private static byte[] readPayload(DataInputStream input, int length) throws Exception {
         if (length < 0 || length > MAX_TEXT_BYTES) {
             throw new IllegalArgumentException("clipboard payload exceeds 4 MiB limit");
-        }        byte[] payload = new byte[length];
+        }
+        byte[] payload = new byte[length];
         input.readFully(payload);
         return payload;
     }
@@ -163,27 +173,44 @@ public final class ClipboardHelper {
             }
             int length = input.readInt();
             if (length < 0 || length > MAX_TEXT_BYTES) {
-                writeError(output, new IllegalArgumentException("clipboard payload exceeds 4 MiB limit"));
+                writeError(
+                    output,
+                    new IllegalArgumentException("clipboard payload exceeds 4 MiB limit")
+                );
                 return;
             }
             try {
                 byte[] payload = readPayload(input, length);
                 switch (operation) {
                     case OP_GET:
-                        if (payload.length != 0) throw new IllegalArgumentException("GET payload must be empty");                        writeResponse(output, STATUS_OK,
-                                getText(service, getPrimaryClip).getBytes(StandardCharsets.UTF_8));
+                        if (payload.length != 0) throw new IllegalArgumentException(
+                            "GET payload must be empty"
+                        );
+                        writeResponse(
+                            output,
+                            STATUS_OK,
+                            getText(service, getPrimaryClip).getBytes(StandardCharsets.UTF_8)
+                        );
                         break;
                     case OP_SET:
-                        setText(service, setPrimaryClip, new String(payload, StandardCharsets.UTF_8));
+                        setText(
+                            service,
+                            setPrimaryClip,
+                            new String(payload, StandardCharsets.UTF_8)
+                        );
                         writeResponse(output, STATUS_OK, new byte[0]);
                         break;
                     case OP_CLEAR:
-                        if (payload.length != 0) throw new IllegalArgumentException("CLEAR payload must be empty");
+                        if (payload.length != 0) throw new IllegalArgumentException(
+                            "CLEAR payload must be empty"
+                        );
                         clear(service, clearPrimaryClip, setPrimaryClip);
                         writeResponse(output, STATUS_OK, new byte[0]);
                         break;
                     default:
-                        throw new IllegalArgumentException("unknown clipboard operation: " + operation);
+                        throw new IllegalArgumentException(
+                            "unknown clipboard operation: " + operation
+                        );
                 }
             } catch (Throwable error) {
                 writeError(output, error);
@@ -199,7 +226,8 @@ public final class ClipboardHelper {
                 break;
             case "set":
                 setText(service, clipboardMethod("setPrimaryClip"), readStdin());
-                break;            case "clear":
+                break;
+            case "clear":
                 Method clearPrimaryClip;
                 try {
                     clearPrimaryClip = clipboardMethod("clearPrimaryClip");

@@ -1,0 +1,208 @@
+---
+lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    configDependencies: {}
+    packageManagerDependencies:
+      pnpm:
+        specifier: 12.3.4
+        version: 12.3.4
+
+packages:
+
+  '@pnpm/exe.darwin-arm64@12.3.4':
+    resolution: {integrity: sha512-PAyUol8T1+/+ViOiXAt51ECA+QnfXCqz6foL4bW+LsoX0NcVd5XVEM2mRQu+LV4oc7uRz9zf9U0P+XFfuQeDAw==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@pnpm/exe.darwin-x64@12.3.4':
+    resolution: {integrity: sha512-fxP9JCk0Cdye+ePuj+GJJLMUMTqHGWRdb1dtv4How876uQ2ehxvenpgiYAir/ceO9PsYUZkFTtyZdx+rRu5QOA==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@pnpm/exe.linux-arm64-musl@12.3.4':
+    resolution: {integrity: sha512-FBOt0/7ye6O6q4AllVV5QMviB6qE6fqkeczV/+MDWQsmo+QJrlfsh6X7CpH/tClVpBZEyIbjpUoT8bNhCYBxEg==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@pnpm/exe.linux-arm64@12.3.4':
+    resolution: {integrity: sha512-t71AVA7LRqiKTyZ5xMYaZc2n5DfdpMbfokZuiIOXHBOM03ECnF0t4iYwaBDqJgVjlKYUOwaF/bRQajGNA4cJ4w==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@pnpm/exe.linux-x64-musl@12.3.4':
+    resolution: {integrity: sha512-RPmk7Jb/aYaFvL2iyDN/AtMY+hUEsue732WmXpcuQ9tBpMnGyA5py7Z3+e+qmQaJ0zY/4ni9jJiyPBQHujmv6w==}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  '@pnpm/exe.linux-x64@12.3.4':
+    resolution: {integrity: sha512-2ZqOlSPkfwX1h5cR+FPiWf8+F+2hZT/3TvhUK5sigHqwaQCIiq8R7CGxhndKs63JtcLi2a1Qpo+wX/EoyfjyJQ==}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@pnpm/exe.win32-arm64@12.3.4':
+    resolution: {integrity: sha512-ANyrHqyqco6SXBysUTRF74itDyyraea7IbFsKFdNXTjcFnfycTDx37EwuhdpPYFNSIh2JhUG4fByclsRfiHX7w==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@pnpm/exe.win32-x64@12.3.4':
+    resolution: {integrity: sha512-WH/KqBPY/hq2Tb7SgQltEZytimcjgKRaCRL/aM9CI0c67iKc5TVmHUhIiL3Ux9FB4bWn36i6XewUcScQI+zG8w==}
+    cpu: [x64]
+    os: [win32]
+
+  pnpm@12.3.4:
+    resolution: {integrity: sha512-lhqkH7B32joEpEHZ+OFevAyW2o73ELLrZ7+e58sGEOq9SPH9hfUc/+c4RnhfoPh8VqOocqHYk/hEZ0G1zORUVw==}
+    engines: {node: '>=18.*'}
+    hasBin: true
+
+snapshots:
+
+  '@pnpm/exe.darwin-arm64@12.3.4':
+    optional: true
+
+  '@pnpm/exe.darwin-x64@12.3.4':
+    optional: true
+
+  '@pnpm/exe.linux-arm64-musl@12.3.4':
+    optional: true
+
+  '@pnpm/exe.linux-arm64@12.3.4':
+    optional: true
+
+  '@pnpm/exe.linux-x64-musl@12.3.4':
+    optional: true
+
+  '@pnpm/exe.linux-x64@12.3.4':
+    optional: true
+
+  '@pnpm/exe.win32-arm64@12.3.4':
+    optional: true
+
+  '@pnpm/exe.win32-x64@12.3.4':
+    optional: true
+
+  pnpm@12.3.4:
+    optionalDependencies:
+      '@pnpm/exe.darwin-arm64': 12.3.4
+      '@pnpm/exe.darwin-x64': 12.3.4
+      '@pnpm/exe.linux-arm64': 12.3.4
+      '@pnpm/exe.linux-arm64-musl': 12.3.4
+      '@pnpm/exe.linux-x64': 12.3.4
+      '@pnpm/exe.linux-x64-musl': 12.3.4
+      '@pnpm/exe.win32-arm64': 12.3.4
+      '@pnpm/exe.win32-x64': 12.3.4
+
+---
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      prettier:
+        specifier: 3.9.10
+        version: 3.9.10
+      prettier-plugin-java:
+        specifier: 2.11.0
+        version: 2.11.0(prettier@3.9.10)
+      prettier-plugin-sh:
+        specifier: 0.20.2
+        version: 0.20.2(prettier@3.9.10)
+
+packages:
+
+  '@reteps/dockerfmt-darwin-arm64@0.5.4':
+    resolution: {integrity: sha512-urMqV+dQyvVI8/WrXwClX9e1PEyS35wFdwJjpZYmL09AkV4Io5U1oam8UBKK7jZk0+YsdF88ay6e86Kn6DIyQg==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@reteps/dockerfmt-darwin-x64@0.5.4':
+    resolution: {integrity: sha512-fJORy6DFxbgDiMqxpLTPZlb5KUY0Vq0iR4NGnyKnuYZ9LdZUS508DK2kt/AJ87/jIKNV1qRG0JXG1Tc6xdvWjw==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@reteps/dockerfmt-linux-arm64@0.5.4':
+    resolution: {integrity: sha512-6pVakO06eXtDuvxy1Dnjs/gQyUoGGycle8PRSt5IFRwLi/AVaOQwfkfmW0WP8VH9wNUeti6BfJ3ksTn2G+XMxg==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@reteps/dockerfmt-linux-x64@0.5.4':
+    resolution: {integrity: sha512-OD6SIlUV1D4TgJoTui3FMBAZsGbTSPYsiT0BKhD6jMUcJb3GpFTa7dY9rL8rP9FUqfL7OTHVUGUOL4Rh64Olog==}
+    cpu: [x64]
+    os: [linux]
+
+  '@reteps/dockerfmt@0.5.4':
+    resolution: {integrity: sha512-HEGgXVVOb+JtGUSSzXl/XPKFIZjMDTUoHarCjaQdkY+cb5M9K/O3b5xm+x0IPIk3SfHurbc0bSgcFsQlzjitxA==}
+    engines: {node: ^v12.20.0 || ^14.13.0 || >=16.0.0}
+    hasBin: true
+
+  prettier-plugin-java@2.11.0:
+    resolution: {integrity: sha512-pLwm2wHvVvW5eVVLf1cq2orY2ATaIj5ngN8hJ5ZdXYzUHzxrfaZkk2xmu8Mz/duBXAc2xT/cUH5+dK414HQSTw==}
+    peerDependencies:
+      prettier: ^3.0.0
+
+  prettier-plugin-sh@0.20.2:
+    resolution: {integrity: sha512-4QVyY7Vav0f5i6AVa80SFwUJXaWsAv9t0yUZIivwI0ucxTei6Jwhso/khWqaKDj4QGdwjP2py1nxQrDUeZ0jyQ==}
+    engines: {node: '>=16.0.0'}
+    peerDependencies:
+      prettier: ^3.6.0
+
+  prettier@3.9.10:
+    resolution: {integrity: sha512-skGHTH1Yb9QvaTC4hWnRTzEYtCpApF0UMBPz+t/0ZPzP8ihefo/btKd+QA7pUE0fEwA1SbS/NmhyEcstdXOIdA==}
+    engines: {node: '>=14'}
+    hasBin: true
+
+  sh-syntax@0.7.0:
+    resolution: {integrity: sha512-sgMyAxpHiGgAaNg+gD3ad41vha24CzIjjghD4mdiON1lUafZPLJNYknyjcXmU4geilPstd69zCKkpccY0YvajA==}
+    engines: {node: '>=16.0.0'}
+
+  web-tree-sitter@0.27.0:
+    resolution: {integrity: sha512-XK08gj6RwTMQatAG7uVRP8MunqotL/XC19vHgkSPKmELgbGPBj4ECvB8haHOUnyj6ls2B8t42UTro14zxGgAHg==}
+
+snapshots:
+
+  '@reteps/dockerfmt-darwin-arm64@0.5.4':
+    optional: true
+
+  '@reteps/dockerfmt-darwin-x64@0.5.4':
+    optional: true
+
+  '@reteps/dockerfmt-linux-arm64@0.5.4':
+    optional: true
+
+  '@reteps/dockerfmt-linux-x64@0.5.4':
+    optional: true
+
+  '@reteps/dockerfmt@0.5.4':
+    optionalDependencies:
+      '@reteps/dockerfmt-darwin-arm64': 0.5.4
+      '@reteps/dockerfmt-darwin-x64': 0.5.4
+      '@reteps/dockerfmt-linux-arm64': 0.5.4
+      '@reteps/dockerfmt-linux-x64': 0.5.4
+
+  prettier-plugin-java@2.11.0(prettier@3.9.10):
+    dependencies:
+      prettier: 3.9.10
+      web-tree-sitter: 0.27.0
+
+  prettier-plugin-sh@0.20.2(prettier@3.9.10):
+    dependencies:
+      '@reteps/dockerfmt': 0.5.4
+      prettier: 3.9.10
+      sh-syntax: 0.7.0
+
+  prettier@3.9.10: {}
+
+  sh-syntax@0.7.0: {}
+
+  web-tree-sitter@0.27.0: {}
