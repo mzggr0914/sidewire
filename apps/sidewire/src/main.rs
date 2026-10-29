@@ -165,6 +165,9 @@ enum Command {
         device: Option<String>,
         #[arg(long = "as", value_enum)]
         run_as: Option<RunAs>,
+        /// Allow installation of test-only APKs.
+        #[arg(short = 't', long)]
+        allow_test: bool,
         apk: PathBuf,
     },
     Uninstall {
@@ -398,12 +401,14 @@ async fn main() -> Result<()> {
         Command::Install {
             device,
             run_as,
+            allow_test,
             apk,
         } => {
             client::run_install(
                 &control,
                 config::resolve_device(&app_config, device),
                 config::resolve_run_as(&app_config, run_as, RunAs::Shell),
+                allow_test,
                 apk,
             )
             .await
@@ -522,6 +527,31 @@ async fn main() -> Result<()> {
                 command,
             )
             .await
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_test_only_is_opt_in() {
+        for (args, expected) in [
+            (vec!["sidewire", "install", "app.apk"], false),
+            (vec!["sidewire", "install", "-t", "app.apk"], true),
+            (vec!["sidewire", "install", "--allow-test", "app.apk"], true),
+            (vec!["sidewire", "install", "app.apk", "-t"], true),
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Command::Install {
+                allow_test, apk, ..
+            } = cli.command
+            else {
+                panic!("expected install command");
+            };
+            assert_eq!(allow_test, expected);
+            assert_eq!(apk, PathBuf::from("app.apk"));
         }
     }
 }

@@ -391,6 +391,7 @@ pub(super) async fn run_install(
     control: &str,
     device: Option<String>,
     run_as: RunAs,
+    allow_test: bool,
     apk: PathBuf,
 ) -> Result<()> {
     let local = tokio::fs::canonicalize(apk).await?;
@@ -409,14 +410,12 @@ pub(super) async fn run_install(
         ControlResponse::Error { message } => bail!(message),
         _ => bail!("unexpected server response"),
     }
-    let result = exec_control(
-        control,
-        device.clone(),
-        run_as,
-        "/system/bin/pm",
-        vec!["install".into(), "-r".into(), remote.clone()],
-    )
-    .await;
+    let mut args = vec!["install".into(), "-r".into()];
+    if allow_test {
+        args.push("-t".into());
+    }
+    args.push(remote.clone());
+    let result = exec_control(control, device.clone(), run_as, "/system/bin/pm", args).await;
     let _ = exec_control(
         control,
         device,
@@ -429,6 +428,15 @@ pub(super) async fn run_install(
     print!("{stdout}");
     eprint!("{stderr}");
     if code.unwrap_or(1) != 0 {
+        if !allow_test
+            && (stdout.contains("INSTALL_FAILED_TEST_ONLY")
+                || stderr.contains("INSTALL_FAILED_TEST_ONLY"))
+        {
+            bail!(
+                "install failed with exit code {:?}; retry with sidewire install -t <APK> to allow test-only APKs",
+                code
+            );
+        }
         bail!("install failed with exit code {:?}", code);
     }
     Ok(())
@@ -664,6 +672,7 @@ pub(super) async fn run_app(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use super::{select_device, selector_matches};
     use crate::server::DeviceInfo;
 
@@ -691,5 +700,147 @@ mod tests {
             devices[0].id
         );
         assert!(selector_matches(&devices[1], "2222"));
+    }
+
+    async fn check_install(allow_test: bool, response: ControlResponse, expect_hint: bool) {
+        let id = rand::random::<u64>();
+        let apk = std::env::temp_dir().join(format!("sidewire test {id:016x}.apk"));
+        std::fs::write(&apk, b"mock APK").unwrap();
+        let canonical = std::fs::canonicalize(&apk).unwrap();
+        #[cfg(windows)]
+        let endpoint = format!(r"\\.\pipe\sidewire-test-{id:016x}");
+        #[cfg(unix)]
+        let endpoint = format!("/tmp/sidewire-test-{id:016x}.sock");
+        let expect_success = matches!(&response, ControlResponse::Exec { code: Some(0), .. });
+        let server = async {
+            #[cfg(windows)]
+            let mut pipe = tokio::net::windows::named_pipe::ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&endpoint)
+                .unwrap();
+            #[cfg(unix)]
+            let listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
+            let mut requests = Vec::new();
+            for response in [
+                ControlResponse::Ok {
+                    message: "pushed mock APK".into(),
+                },
+                response,
+                ControlResponse::Exec {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    code: Some(0),
+                },
+            ] {
+                #[cfg(windows)]
+                let stream = {
+                    pipe.connect().await.unwrap();
+                    let connected = pipe;
+                    pipe = tokio::net::windows::named_pipe::ServerOptions::new()
+                        .create(&endpoint)
+                        .unwrap();
+                    connected
+                };
+                #[cfg(unix)]
+                let stream = listener.accept().await.unwrap().0;
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                requests.push(serde_json::from_str::<ControlRequest>(&line).unwrap());
+                let mut encoded = serde_json::to_vec(&response).unwrap();
+                encoded.push(b'\n');
+                reader.get_mut().write_all(&encoded).await.unwrap();
+                reader.get_mut().flush().await.unwrap();
+            }
+            requests
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                server,
+                run_install(
+                    &endpoint,
+                    Some("test-device".into()),
+                    RunAs::Root,
+                    allow_test,
+                    apk.clone(),
+                )
+            )
+        })
+        .await;
+        std::fs::remove_file(apk).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(endpoint).unwrap();
+        let (requests, install) = result.expect("mock install timed out");
+        assert_eq!(install.is_ok(), expect_success);
+        if let Err(error) = install {
+            assert_eq!(
+                error.to_string().contains("sidewire install -t"),
+                expect_hint
+            );
+        }
+        let ControlRequest::Push { local, remote, .. } = &requests[0] else {
+            panic!("expected APK push");
+        };
+        assert_eq!(local, &canonical.to_string_lossy());
+        assert!(remote.starts_with("/data/local/tmp/sidewire-install-"));
+        let ControlRequest::Exec { program, args, .. } = &requests[1] else {
+            panic!("expected package manager install");
+        };
+        assert_eq!(program, "/system/bin/pm");
+        let mut expected = vec!["install", "-r"];
+        if allow_test {
+            expected.push("-t");
+        }
+        expected.push(remote);
+        assert_eq!(args, &expected);
+        let ControlRequest::Exec { program, args, .. } = &requests[2] else {
+            panic!("expected temporary APK cleanup");
+        };
+        assert_eq!(program, "/system/bin/rm");
+        assert_eq!(args, &["-f", remote]);
+        for request in requests {
+            let (ControlRequest::Push { device, run_as, .. }
+            | ControlRequest::Exec { device, run_as, .. }) = request
+            else {
+                panic!("unexpected install request");
+            };
+            assert_eq!(device.as_deref(), Some("test-device"));
+            assert!(matches!(run_as, RunAs::Root));
+        }
+    }
+
+    #[tokio::test]
+    async fn install_forwards_flags_and_cleans_up_on_success_and_failure() {
+        for allow_test in [false, true] {
+            for (stdout, stderr, code) in [
+                ("Success", "", Some(0)),
+                ("Failure [INSTALL_FAILED_TEST_ONLY]", "", Some(1)),
+                ("", "Failure [INSTALL_FAILED_TEST_ONLY]", Some(1)),
+                ("Failure [INSTALL_FAILED_VERSION_DOWNGRADE]", "", Some(1)),
+                ("", "terminated", None),
+            ] {
+                let expect_hint = !allow_test
+                    && (stdout.contains("INSTALL_FAILED_TEST_ONLY")
+                        || stderr.contains("INSTALL_FAILED_TEST_ONLY"));
+                check_install(
+                    allow_test,
+                    ControlResponse::Exec {
+                        stdout: stdout.into(),
+                        stderr: stderr.into(),
+                        code,
+                    },
+                    expect_hint,
+                )
+                .await;
+            }
+        }
+        check_install(
+            true,
+            ControlResponse::Error {
+                message: "device disconnected".into(),
+            },
+            false,
+        )
+        .await;
     }
 }
