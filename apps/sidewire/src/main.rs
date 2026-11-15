@@ -126,7 +126,7 @@ enum Command {
         device: Option<String>,
         #[arg(long = "as", value_enum)]
         run_as: Option<RunAs>,
-        /// Use per-keystroke raw console input. Default is reliable line input.
+        /// Use raw console input (the default for interactive terminals).
         #[arg(long)]
         raw: bool,
         /// Send a synthetic command sequence to verify the PTY path.

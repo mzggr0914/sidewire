@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- use the remote shell's interactive editor on Windows so pasted commands and prompts share the same output stream
+
 ## 1.0.6
 
 - use process-specific temporary files when trimming the Android daemon log

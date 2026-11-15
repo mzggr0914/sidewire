@@ -57,6 +57,10 @@ sidewire shell
 sidewire exec --as root id
 ```
 
+대화형 셸의 입력 편집, 명령 기록, Tab 자동완성은 Android 셸이 처리합니다.
+Windows에서도 붙여 넣은 입력과 셸 프롬프트가 같은 출력 스트림으로 표시됩니다.
+`--raw` 옵션은 호환성을 위해 유지되며 같은 대화형 모드로 동작합니다.
+
 ## 클립보드와 파일 전송
 
 ```powershell

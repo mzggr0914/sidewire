@@ -59,6 +59,10 @@ sidewire shell
 sidewire exec --as root id
 ```
 
+Interactive shells use the Android shell's line editing, history, and Tab completion.
+On Windows, this also keeps pasted input and shell prompts in the same output stream.
+The `--raw` option remains available for compatibility and uses the same interactive mode.
+
 ## Clipboard and files
 
 ```powershell

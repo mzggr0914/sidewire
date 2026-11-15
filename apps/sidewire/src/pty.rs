@@ -23,10 +23,42 @@ struct LineDisplayState {
     prompt_tail: std::sync::Mutex<String>,
 }
 
-struct RawModeGuard;
+struct RawModeGuard {
+    #[cfg(windows)]
+    original_mode: u32,
+}
+
+impl RawModeGuard {
+    fn enable() -> Result<Self> {
+        #[cfg(windows)]
+        let original_mode = {
+            const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+            let handle = windows_console_handle(STD_INPUT_HANDLE)
+                .context("stdin is not a Windows console")?;
+            let mut mode = 0;
+            if unsafe { get_console_mode(handle, &mut mode) } == 0 {
+                return Err(std::io::Error::last_os_error()).context("read console mode");
+            }
+            mode
+        };
+        crossterm::terminal::enable_raw_mode().context("enable terminal raw mode")?;
+        Ok(Self {
+            #[cfg(windows)]
+            original_mode,
+        })
+    }
+}
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+            if let Some(handle) = windows_console_handle(STD_INPUT_HANDLE) {
+                unsafe { set_console_mode(handle, self.original_mode) };
+            }
+        }
+        #[cfg(not(windows))]
         let _ = crossterm::terminal::disable_raw_mode();
     }
 }
@@ -99,7 +131,6 @@ fn format_completion_candidates(
     output
 }
 
-#[cfg(not(windows))]
 fn key_bytes(key: crossterm::event::KeyEvent) -> Option<Vec<u8>> {
     use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
     if key.kind == KeyEventKind::Release {
@@ -152,14 +183,30 @@ fn key_bytes(key: crossterm::event::KeyEvent) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-#[cfg(not(windows))]
 fn spawn_console_reader(
     stop: Arc<AtomicBool>,
     tx: tokio::sync::mpsc::UnboundedSender<ConsoleEvent>,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         use crossterm::event::{Event, poll, read};
+        #[cfg(windows)]
+        let mut last_size = crossterm::terminal::size().ok();
         while !stop.load(Ordering::Relaxed) {
+            #[cfg(windows)]
+            if let Ok(size) = crossterm::terminal::size()
+                && last_size != Some(size)
+            {
+                last_size = Some(size);
+                if tx
+                    .send(ConsoleEvent::Resize {
+                        cols: size.0,
+                        rows: size.1,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
             match poll(std::time::Duration::from_millis(50)) {
                 Ok(false) => continue,
                 Ok(true) => {}
@@ -192,61 +239,7 @@ fn spawn_console_reader(
                 }
             }
         }
-    });
-}
-
-#[cfg(windows)]
-fn spawn_console_reader(
-    stop: Arc<AtomicBool>,
-    tx: tokio::sync::mpsc::UnboundedSender<ConsoleEvent>,
-) {
-    let input_stop = stop.clone();
-    let input_tx = tx.clone();
-    tokio::task::spawn_blocking(move || {
-        use std::io::Read;
-        let stdin = std::io::stdin();
-        let mut input = stdin.lock();
-        let mut buffer = [0u8; 1024];
-        while !input_stop.load(Ordering::Relaxed) {
-            match input.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(read) => {
-                    if input_tx
-                        .send(ConsoleEvent::Input(buffer[..read].to_vec()))
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    let _ =
-                        input_tx.send(ConsoleEvent::Error(format!("stdin read failed: {error}")));
-                    break;
-                }
-            }
-        }
-    });
-
-    tokio::task::spawn_blocking(move || {
-        let mut last = crossterm::terminal::size().unwrap_or((80, 24));
-        while !stop.load(Ordering::Relaxed) {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            if let Ok(size) = crossterm::terminal::size()
-                && size != last
-            {
-                last = size;
-                if tx
-                    .send(ConsoleEvent::Resize {
-                        cols: size.0,
-                        rows: size.1,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        }
-    });
+    })
 }
 
 pub(super) async fn run_pty_client(
@@ -285,11 +278,10 @@ pub(super) async fn run_pty_client(
         _ => bail!("unexpected PTY server response"),
     }
 
-    crossterm::terminal::enable_raw_mode().context("enable terminal raw mode")?;
-    let raw_guard = RawModeGuard;
+    let raw_guard = RawModeGuard::enable()?;
     let stop = Arc::new(AtomicBool::new(false));
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-    spawn_console_reader(stop.clone(), event_tx);
+    let input_reader = spawn_console_reader(stop.clone(), event_tx);
     let stream_id = 0x5054_5901;
     let mut stdout = crate::console_output::StreamOutput::stdout();
     let (mut net_read, mut net_write) = tokio::io::split(reader);
@@ -375,6 +367,7 @@ pub(super) async fn run_pty_client(
         result = &mut output_loop => result,
     };
     stop.store(true, Ordering::Relaxed);
+    let _ = input_reader.await;
     drop(raw_guard);
     result
 }
@@ -458,6 +451,8 @@ unsafe extern "system" {
     fn get_std_handle(std_handle: u32) -> *mut std::ffi::c_void;
     #[link_name = "GetConsoleMode"]
     fn get_console_mode(console: *mut std::ffi::c_void, mode: *mut u32) -> i32;
+    #[link_name = "SetConsoleMode"]
+    fn set_console_mode(console: *mut std::ffi::c_void, mode: u32) -> i32;
     #[link_name = "ReadConsoleW"]
     fn read_console_w(
         console: *mut std::ffi::c_void,
@@ -890,40 +885,54 @@ pub(super) async fn run_shell(
     control: &str,
     device: Option<String>,
     run_as: RunAs,
-    raw: bool,
+    _raw: bool,
     probe: bool,
 ) -> Result<()> {
     if probe {
         return run_pty_probe(control, device, run_as).await;
     }
-    if raw {
-        return run_pty_client(control, device, run_as, "/system/bin/sh".into(), Vec::new()).await;
-    }
-    #[cfg(not(windows))]
-    {
-        // Unix terminals already provide a good raw PTY experience, so keep the
-        // remote shell's native editor/history/completion enabled by default.
-        run_pty_client(control, device, run_as, "/system/bin/sh".into(), Vec::new()).await
-    }
     #[cfg(windows)]
     {
-        // The Windows console already echoes and edits cooked line input. Turn
-        // off mksh's remote editor so the submitted command is not drawn a
-        // second time; SideWire handles Tab completion locally in this mode.
-        run_pty_line_client(
-            control,
-            device,
-            run_as,
-            "/system/bin/sh".into(),
-            vec!["+o".into(), "emacs".into()],
-        )
-        .await
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return run_pty_line_client(
+                control,
+                device,
+                run_as,
+                "/system/bin/sh".into(),
+                vec!["+o".into(), "emacs".into()],
+            )
+            .await;
+        }
     }
+    // The remote shell owns echo, line editing and completion, as in adb shell.
+    run_pty_client(control, device, run_as, "/system/bin/sh".into(), Vec::new()).await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{format_completion_candidates, normalize_console_line};
+    use super::{format_completion_candidates, key_bytes, normalize_console_line};
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+    #[test]
+    fn forwards_terminal_keys_and_unicode_to_remote_pty() {
+        for (key, modifiers, expected) in [
+            (KeyCode::Enter, KeyModifiers::NONE, &b"\r"[..]),
+            (KeyCode::Tab, KeyModifiers::NONE, &b"\t"[..]),
+            (KeyCode::Up, KeyModifiers::NONE, &b"\x1b[A"[..]),
+            (KeyCode::Char('c'), KeyModifiers::CONTROL, &b"\x03"[..]),
+            (KeyCode::Char('d'), KeyModifiers::CONTROL, &b"\x04"[..]),
+            (KeyCode::Char('한'), KeyModifiers::NONE, "한".as_bytes()),
+        ] {
+            assert_eq!(
+                key_bytes(KeyEvent::new(key, modifiers)).as_deref(),
+                Some(expected)
+            );
+        }
+        let released =
+            KeyEvent::new_with_kind(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Release);
+        assert_eq!(key_bytes(released), None);
+    }
 
     #[test]
     fn normalizes_windows_console_crlf_to_one_pty_enter() {
