@@ -2,7 +2,7 @@
 
 Bug reports and focused pull requests are welcome.
 
-Use Node.js 24 and pnpm 12.3.4 (the version pinned in both package manifests).
+Use Node.js 24 and the version of pnpm pinned in both package manifests.
 Before opening a PR, install the formatter dependencies from the repository root,
 then check formatting:
 

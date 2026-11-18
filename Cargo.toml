@@ -7,19 +7,18 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.7"
+version = "1.0.8"
 edition = "2024"
 license = "GPL-3.0-only"
-authors = ["SideWire contributors"]
 
 [workspace.dependencies]
 anyhow = "1"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
-rand = "0.9"
+rand = "0.10"
 serde = { version = "1", features = ["derive"] }
-snow = "0.9"
+snow = "0.10"
 spake2 = "0.4"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"

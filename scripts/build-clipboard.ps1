@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$version = "9.4.17"
-$expectedSha256 = "2100511344497F041644A4D63FB7BE8A516CE9BACE30B7D17AB27CC93A0E58D4"
+$version = "9.5.33"
+$expectedSha256 = "9743E95DE295FB6F5490E21DA26536E4D0921809511423122FF20328A572E7F5"
 $toolDir = Join-Path $root "target\tools"
 $r8 = Join-Path $toolDir "r8-$version.jar"
 $source = Join-Path $root "android\clipboard\ClipboardHelper.java"

@@ -2,7 +2,11 @@
 
 ## Unreleased
 
+## 1.0.8
+
 - use the remote shell's interactive editor on Windows so pasted commands and prompts share the same output stream
+- update Rust and WebUI dependencies, including the Noise library, while preserving compatibility with existing SideWire peers
+- update CI tooling, Android NDK to r30, and D8 to 9.5.33
 
 ## 1.0.6
 

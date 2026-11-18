@@ -159,7 +159,10 @@ fn noise_builder<'a>(psk: &'a [u8; 32], prologue: &'a [u8]) -> Result<snow::Buil
     let params = NOISE_PATTERN
         .parse()
         .context("parse SideWire Noise pattern")?;
-    Ok(snow::Builder::new(params).prologue(prologue).psk(0, psk))
+    let builder = snow::Builder::new(params)
+        .prologue(prologue)
+        .context("set SideWire Noise prologue")?;
+    builder.psk(0, psk).context("set SideWire Noise PSK")
 }
 
 pub async fn noise_initiator<S>(

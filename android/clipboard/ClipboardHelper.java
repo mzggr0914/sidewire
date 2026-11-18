@@ -98,14 +98,20 @@ public final class ClipboardHelper {
         return text == null ? "" : text.toString();
     }
 
-    private static void setText(Object service, Method setPrimaryClip, String text)
-        throws Exception {
+    private static void setText(
+        Object service,
+        Method setPrimaryClip,
+        String text
+    ) throws Exception {
         Object clip = newPlainText(text);
         setPrimaryClip.invoke(service, argumentsFor(setPrimaryClip, clip));
     }
 
-    private static void clear(Object service, Method clearPrimaryClip, Method setPrimaryClip)
-        throws Exception {
+    private static void clear(
+        Object service,
+        Method clearPrimaryClip,
+        Method setPrimaryClip
+    ) throws Exception {
         if (clearPrimaryClip != null) {
             clearPrimaryClip.invoke(service, argumentsFor(clearPrimaryClip, null));
         } else {
@@ -122,8 +128,11 @@ public final class ClipboardHelper {
         return text.toString();
     }
 
-    private static void writeResponse(DataOutputStream output, int status, byte[] payload)
-        throws Exception {
+    private static void writeResponse(
+        DataOutputStream output,
+        int status,
+        byte[] payload
+    ) throws Exception {
         output.writeByte(status);
         output.writeInt(payload.length);
         output.write(payload);
