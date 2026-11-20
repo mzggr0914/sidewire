@@ -1,0 +1,46 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Seoul
+    open-pull-requests-limit: 2
+    groups:
+      rust-patches:
+        patterns: ['*']
+        exclude-patterns: [snow, spake2]
+        update-types: [patch]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Seoul
+    open-pull-requests-limit: 1
+    groups:
+      formatter-patches:
+        patterns: [prettier, 'prettier-plugin-*']
+        update-types: [patch]
+
+  - package-ecosystem: npm
+    directory: /webui
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Seoul
+    open-pull-requests-limit: 2
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Seoul
+    open-pull-requests-limit: 2
