@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- remove `clipboard push` and `clipboard pull` and drop the desktop clipboard dependency; use `clipboard set` and `clipboard get` to write and read Android clipboard text
+- add Dependabot update pull requests and a weekly pnpm security audit
+- leave the WebUI's PC host field blank when no address has been saved
+- clarify the build instructions in both READMEs and request the installed CLI version in bug reports
+
 ## 1.1.0
 
 - use Bash and Linux or WSL for the default build and release commands
@@ -12,6 +17,10 @@
 - use the remote shell's interactive editor on Windows so pasted commands and prompts share the same output stream
 - update Rust and WebUI dependencies, including the Noise library, while preserving compatibility with existing SideWire peers
 - update CI tooling, Android NDK to r30, and D8 to 9.5.33
+
+## 1.0.7
+
+- support installing test-only APKs with `sidewire install -t` or `--allow-test`
 
 ## 1.0.6
 

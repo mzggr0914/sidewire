@@ -603,17 +603,6 @@ pub(super) async fn run_clipboard(
             Ok(())
         }
         ClipboardCommand::Set { text } => clipboard_set(control, device, text).await,
-        ClipboardCommand::Push => {
-            let mut host = arboard::Clipboard::new().context("open PC clipboard")?;
-            let text = host.get_text().context("read PC clipboard text")?;
-            clipboard_set(control, device, text).await
-        }
-        ClipboardCommand::Pull => {
-            let text = clipboard_get(control, device).await?;
-            let mut host = arboard::Clipboard::new().context("open PC clipboard")?;
-            host.set_text(text).context("write PC clipboard text")?;
-            Ok(())
-        }
         ClipboardCommand::Clear => {
             match request_control(control, &ControlRequest::ClipboardClear { device }).await? {
                 ControlResponse::Ok { .. } => Ok(()),

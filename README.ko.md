@@ -8,14 +8,14 @@ KernelSU 모듈로 설치되는 Rust 데몬과, PC 쪽은 Rust로 작성된 CLI/
 
 기본 설정은 보안 연결이며, 페어링 이후의 일반 통신은 인증과 암호화가 적용됩니다.
 
-ADB 의 대부분의 기능을 지원하지만, 내부적으로 ADB 를 사용하지 않기 때문에 Detect 되지 않습니다.
+SideWire 연결은 ADB 세션으로 표시되지 않습니다. Android의 기본 보안 정책이 적용되고 SELinux가 enforcing 모드일 때, 일반 앱(`untrusted_app`)은 SideWire 데몬(`sidewired`)이 실행 중인지 직접 확인할 수 없습니다.
 
 ## 주요 기능
 
 - 대화형 shell / PTY와 단일 명령 실행
 - root 또는 shell 권한으로 실행
 - 디렉터리 포함 파일 push / pull
-- PC ↔ Android 텍스트 클립보드
+- Android 클립보드 텍스트 읽기·쓰기·지우기
 - TCP forward / reverse tunnel
 - inbound / outbound 연결 모드
 - 여러 기기 동시 관리
@@ -61,17 +61,25 @@ sidewire exec --as root id
 Windows에서도 붙여 넣은 입력과 셸 프롬프트가 같은 출력 스트림으로 표시됩니다.
 `--raw` 옵션은 호환성을 위해 유지되며 같은 대화형 모드로 동작합니다.
 
-## 클립보드와 파일 전송
+## Android 클립보드
 
 ```powershell
-sidewire clipboard push
-sidewire clipboard pull
+sidewire clipboard get
+sidewire clipboard set "SideWire에서 보낸 텍스트"
+sidewire clipboard clear
+```
+
+`clipboard get`은 Android 클립보드 텍스트를 그대로 표준 출력에 쓰며 줄바꿈을 추가하지 않습니다.
+
+## 파일 전송
+
+```powershell
 sidewire push .\build /data/local/tmp/build
 sidewire pull /sdcard/Download/report.txt ./
 sidewire pull /sdcard/MyFolder .\MyFolder
 ```
 
-`clipboard push`는 PC 클립보드를 Android로 보내고, `pull`은 Android 클립보드를 PC로 가져옵니다. 재귀 `push`/`pull`은 기본적으로 파일을 최대 4개까지 병렬 전송하며 `--jobs 1..16`으로 동시성을 조절할 수 있습니다. 프로토콜 1.2 상대끼리는 파일 청크에 receive-window flow control도 적용하고, 이전 버전 상대와는 기존 방식으로 호환됩니다.
+재귀 `push`/`pull`은 기본적으로 파일을 최대 4개까지 병렬 전송하며 `--jobs 1..16`으로 동시성을 조절할 수 있습니다. 프로토콜 1.2 상대끼리는 파일 청크에 receive-window flow control도 적용하고, 이전 버전 상대와는 기존 방식으로 호환됩니다.
 
 단일 파일 `pull`의 목적지가 기존 로컬 디렉터리이면 원격 파일명을 유지해 저장합니다. 그 외에는 목적지를 저장할 파일 경로로 사용하며, 같은 이름의 파일이 있으면 덮어씁니다.
 
@@ -97,16 +105,23 @@ Secure 모드는 짧게 유지되는 페어링 PIN에 SPAKE2를 사용하고, �
 
 ## 빌드
 
-Linux 또는 WSL 안에서 Linux CLI와 KernelSU 모듈을 빌드합니다.
+Linux 또는 WSL에서 개발용 Linux CLI와 KernelSU 모듈 구성물을 빌드합니다.
 
 ```bash
 bash scripts/build.sh
+```
+
+빌드와 패키징을 한 번에 진행해 배포 파일을 `dist/`에 만들려면 다음을 실행합니다.
+
+```bash
 bash scripts/release.sh
 ```
 
-`--host-only`를 사용하면 Linux CLI만, `--android-only`를 사용하면 KernelSU 모듈만 빌드합니다. 릴리스 스크립트는 선택한 배포 파일을 `dist/`에 저장합니다.
+두 스크립트 모두 `--host-only`로 Linux CLI를, `--android-only`로 KernelSU 모듈을 선택할 수 있습니다. 이미 해당 대상을 빌드했다면 `release.sh`에 `--skip-build`를 붙여 기존 결과만 패키징합니다.
 
-Linux CLI를 빌드하려면 Rust와 C 컴파일러가 필요합니다. Android 빌드에는 Node.js 24(예: `fnm`으로 설치), `webui/package.json`에 고정된 pnpm, JDK 21, Linux용 Android NDK r30, `cargo-ndk`도 필요합니다. `rustup target add aarch64-linux-android`와 `cargo install cargo-ndk --locked`를 실행하세요. NDK가 SDK 기본 경로에 없으면 `ANDROID_NDK_HOME`을 지정하세요. 릴리스 스크립트는 `zip`, `unzip`, `sha256sum`을 사용합니다.
+Linux CLI 빌드에는 Rust와 C 컴파일러가 필요합니다. Android 빌드에는 Node.js 24(예: `fnm`으로 설치), `webui/package.json`에 고정된 pnpm, Linux용 Android NDK r30, `cargo-ndk`도 필요합니다. `rustup target add aarch64-linux-android`와 `cargo install cargo-ndk --locked`를 실행하세요. NDK가 SDK 기본 경로에 없으면 `ANDROID_NDK_HOME`을 지정하세요.
+
+클립보드 도우미 빌드에는 JDK와 `sha256sum`이 필요하며, 첫 빌드에서 D8을 내려받으려면 `curl`이 필요합니다. CI는 JDK 21을 사용하며 로컬 빌드에도 이 버전을 권장합니다. KernelSU ZIP 패키징에는 `zip`과 `unzip`도 필요합니다.
 
 Windows CLI는 Windows의 Rust/MSVC 환경에서 `cargo build --release --locked -p sidewire`로 빌드합니다. macOS CLI는 macOS에서 다음 명령으로 빌드합니다.
 

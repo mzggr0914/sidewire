@@ -245,14 +245,10 @@ enum ConfigCommand {
 
 #[derive(Subcommand)]
 enum ClipboardCommand {
-    /// Print the Android clipboard text.
+    /// Print the Android clipboard text without adding a newline.
     Get,
     /// Set Android clipboard text directly.
     Set { text: String },
-    /// Copy the current PC clipboard to Android.
-    Push,
-    /// Copy the current Android clipboard to the PC clipboard.
-    Pull,
     /// Clear the Android clipboard.
     Clear,
 }

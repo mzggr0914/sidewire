@@ -13,8 +13,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: SideWire version
-      placeholder: 1.0.6
+      label: SideWire CLI version
+      description: Run `sidewire --version` on your PC and paste the output.
     validations:
       required: true
   - type: input

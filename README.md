@@ -10,14 +10,14 @@ It provides a Rust daemon installed as a KernelSU module and a Rust CLI/server o
 
 Secure connections are the default, and normal traffic is authenticated and encrypted after pairing.
 
-It supports most of the workflows you would normally use ADB for, but ADB is not used internally, so SideWire does not show up as an ADB session.
+SideWire connections do not appear as ADB sessions. Under Android’s default security policy with SELinux in enforcing mode, ordinary apps running in the `untrusted_app` domain cannot directly check whether the SideWire daemon (`sidewired`) is running.
 
 ## What it does
 
 - interactive shell / PTY and one-shot commands
 - root or shell execution
 - recursive file push and pull
-- PC and Android text clipboard
+- read, write, and clear the Android text clipboard
 - TCP forward and reverse tunnels
 - inbound and outbound connection modes
 - multiple devices with stable device IDs
@@ -63,17 +63,25 @@ Interactive shells use the Android shell's line editing, history, and Tab comple
 On Windows, this also keeps pasted input and shell prompts in the same output stream.
 The `--raw` option remains available for compatibility and uses the same interactive mode.
 
-## Clipboard and files
+## Android clipboard
 
 ```powershell
-sidewire clipboard push
-sidewire clipboard pull
+sidewire clipboard get
+sidewire clipboard set "Hello from SideWire"
+sidewire clipboard clear
+```
+
+`clipboard get` writes the Android clipboard text to standard output as-is, without adding a newline.
+
+## File transfers
+
+```powershell
 sidewire push .\build /data/local/tmp/build
 sidewire pull /sdcard/Download/report.txt ./
 sidewire pull /sdcard/MyFolder .\MyFolder
 ```
 
-`clipboard push` copies the PC clipboard to Android; `pull` does the reverse. Recursive `push`/`pull` transfers use up to 4 concurrent files by default; use `--jobs 1..16` to tune concurrency. Protocol 1.2 peers also apply receive-window flow control to file chunks, while older peers keep the existing fallback behavior.
+Recursive `push`/`pull` transfers use up to 4 concurrent files by default; use `--jobs 1..16` to tune concurrency. Protocol 1.2 peers also apply receive-window flow control to file chunks, while older peers keep the existing fallback behavior.
 
 For a single-file `pull`, an existing local directory keeps the remote file name. Otherwise, the destination is used as the output file path. An existing output file is overwritten.
 
@@ -99,16 +107,23 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## Building
 
-Build the Linux CLI and the KernelSU module on Linux or inside WSL:
+On Linux or WSL, build the Linux CLI and the KernelSU module components for development:
 
 ```bash
 bash scripts/build.sh
+```
+
+To build and package release artifacts in `dist/`, run:
+
+```bash
 bash scripts/release.sh
 ```
 
-Use `--host-only` for the Linux CLI or `--android-only` for the KernelSU module. The release script writes the selected artifacts to `dist/`.
+Both scripts accept `--host-only` for the Linux CLI or `--android-only` for the KernelSU module. If you already built the selected targets, pass `--skip-build` to `release.sh` to package the existing outputs.
 
-For a Linux host build, install Rust and a C toolchain. Android builds also require Node.js 24 (for example via `fnm`), the pnpm version pinned in `webui/package.json`, JDK 21, Linux Android NDK r30, and `cargo-ndk`. Install the Android Rust target with `rustup target add aarch64-linux-android` and install cargo-ndk with `cargo install cargo-ndk --locked`. Set `ANDROID_NDK_HOME` if the NDK is outside the SDK's default location. The release script uses `zip`, `unzip`, and `sha256sum`.
+For a Linux host build, install Rust and a C toolchain. Android builds also need Node.js 24 (for example via `fnm`), the pnpm version pinned in `webui/package.json`, Linux Android NDK r30, and `cargo-ndk`. Install the Rust target with `rustup target add aarch64-linux-android` and cargo-ndk with `cargo install cargo-ndk --locked`. Set `ANDROID_NDK_HOME` if the NDK is outside the SDK's default location.
+
+The clipboard helper needs a JDK and `sha256sum`, plus `curl` on the first build to download D8. CI uses JDK 21, which is also recommended for local builds. KernelSU ZIP packaging additionally needs `zip` and `unzip`.
 
 Build the Windows CLI with `cargo build --release --locked -p sidewire` from a native Windows Rust/MSVC environment. On macOS, build the CLI with:
 
