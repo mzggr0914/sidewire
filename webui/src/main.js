@@ -8,7 +8,7 @@ app.innerHTML = `
 <section class="hero"><div><h1>SideWire</h1><div class="muted">Native Android bridge</div></div><span class="badge" id="state">loading</span></section>
 <div class="warning hidden" id="insecureWarning"><b>Insecure mode is active.</b> Authentication and traffic encryption are disabled. Use only on a trusted local network.</div>
 <section class="card"><div class="grid">
-<div><label>PC host (Outbound only)</label><input id="host" placeholder="192.168.0.150"></div>
+<div><label>PC host (Outbound only)</label><input id="host" placeholder="IP address or hostname"></div>
 <div><label>Port</label><input id="port" type="number" value="58321"></div>
 <div><label>Device name</label><input id="name" placeholder="Android"></div>
 <div><label>Mode</label><select id="mode"><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select></div>
@@ -97,7 +97,7 @@ async function refreshPaired() {
   }
 }
 async function load() {
-  $('host').value = await get('host', '192.168.0.150');
+  $('host').value = await get('host');
   $('port').value = await get('port', '58321');
   $('name').value = await get('name', 'Android');
   $('mode').value = await get('mode', 'outbound');
