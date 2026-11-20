@@ -16,7 +16,7 @@ fi
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target-linux}"
 
 echo "==> Building Linux CLI ($(uname -m))"
-cargo build --release -p sidewire
+cargo build --release --locked -p sidewire
 
 echo "==> Linux build complete"
 echo "$CARGO_TARGET_DIR/release/sidewire"

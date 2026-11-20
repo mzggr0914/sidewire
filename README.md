@@ -99,22 +99,21 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## Building
 
-Windows + WebUI + Android:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
-```
-
-macOS host CLI:
+Build the Linux CLI and the KernelSU module on Linux or inside WSL:
 
 ```bash
-bash ./scripts/build-macos.sh
+bash scripts/build.sh
+bash scripts/release.sh
 ```
 
-Linux host CLI:
+Use `--host-only` for the Linux CLI or `--android-only` for the KernelSU module. The release script writes the selected artifacts to `dist/`.
+
+For a Linux host build, install Rust and a C toolchain. Android builds also require Node.js 24 (for example via `fnm`), the pnpm version pinned in `webui/package.json`, JDK 21, Linux Android NDK r30, and `cargo-ndk`. Install the Android Rust target with `rustup target add aarch64-linux-android` and install cargo-ndk with `cargo install cargo-ndk --locked`. Set `ANDROID_NDK_HOME` if the NDK is outside the SDK's default location. The release script uses `zip`, `unzip`, and `sha256sum`.
+
+Build the Windows CLI with `cargo build --release --locked -p sidewire` from a native Windows Rust/MSVC environment. On macOS, build the CLI with:
 
 ```bash
-bash ./scripts/build-linux.sh
+bash scripts/build-macos.sh
 ```
 
 Run the normal Rust checks with:

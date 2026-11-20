@@ -97,22 +97,21 @@ Secure 모드는 짧게 유지되는 페어링 PIN에 SPAKE2를 사용하고, �
 
 ## 빌드
 
-Windows + WebUI + Android:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
-```
-
-macOS host CLI:
+Linux 또는 WSL 안에서 Linux CLI와 KernelSU 모듈을 빌드합니다.
 
 ```bash
-bash ./scripts/build-macos.sh
+bash scripts/build.sh
+bash scripts/release.sh
 ```
 
-Linux host CLI:
+`--host-only`를 사용하면 Linux CLI만, `--android-only`를 사용하면 KernelSU 모듈만 빌드합니다. 릴리스 스크립트는 선택한 배포 파일을 `dist/`에 저장합니다.
+
+Linux CLI를 빌드하려면 Rust와 C 컴파일러가 필요합니다. Android 빌드에는 Node.js 24(예: `fnm`으로 설치), `webui/package.json`에 고정된 pnpm, JDK 21, Linux용 Android NDK r30, `cargo-ndk`도 필요합니다. `rustup target add aarch64-linux-android`와 `cargo install cargo-ndk --locked`를 실행하세요. NDK가 SDK 기본 경로에 없으면 `ANDROID_NDK_HOME`을 지정하세요. 릴리스 스크립트는 `zip`, `unzip`, `sha256sum`을 사용합니다.
+
+Windows CLI는 Windows의 Rust/MSVC 환경에서 `cargo build --release --locked -p sidewire`로 빌드합니다. macOS CLI는 macOS에서 다음 명령으로 빌드합니다.
 
 ```bash
-bash ./scripts/build-linux.sh
+bash scripts/build-macos.sh
 ```
 
 기본 Rust 검사는 다음과 같습니다.

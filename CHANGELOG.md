@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.0
+
+- use Bash and Linux or WSL for the default build and release commands
+- build the KernelSU module on Ubuntu in CI while keeping native Windows and macOS builds
+
 ## 1.0.8
 
 - use the remote shell's interactive editor on Windows so pasted commands and prompts share the same output stream

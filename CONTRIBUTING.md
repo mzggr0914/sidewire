@@ -16,10 +16,7 @@ Java, JavaScript, CSS, HTML, JSON, YAML, Markdown and shell scripts, including
 the extensionless `module/bin/sidewirectl`. CI checks this on Windows and Linux.
 Rust formatting is independent: use `cargo fmt --all` to fix it. The Rust CI job
 runs `cargo fmt --all -- --check` separately; pnpm commands do not invoke Cargo.
-Generated files and dependency lockfiles are excluded. PowerShell and TOML
-are not covered by this command; `.editorconfig` records their basic style.
-PowerShell would need a separate PSScriptAnalyzer formatter, and TOML would
-need a formatter such as Taplo before they can be enforced in CI.
+Generated files, dependency lockfiles, and TOML are excluded.
 To block merges on formatting failures, repository rules must mark the two
 `Formatting` jobs as required checks. Adding the workflow alone reports failures
 but does not configure branch protection.
@@ -32,7 +29,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-If you changed the WebUI, also run `pnpm build` from `webui/`. If you changed `sidewired`, make sure the Android arm64 target still builds.
+On Linux or WSL, use `bash scripts/build.sh` for local builds. For changes to Android, WebUI, or packaging, run `bash scripts/release.sh --android-only` to build and verify the KernelSU ZIP. CI runs this same packaging step on Ubuntu and still builds and tests the desktop CLI on Windows and macOS.
 
 A few preferences:
 

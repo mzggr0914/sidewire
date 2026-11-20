@@ -21,7 +21,7 @@ fi
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target-macos}"
 
 echo "==> Building macOS CLI ($(uname -m))"
-cargo build --release -p sidewire
+cargo build --release --locked -p sidewire
 
 echo "==> macOS build complete"
 echo "$CARGO_TARGET_DIR/release/sidewire"

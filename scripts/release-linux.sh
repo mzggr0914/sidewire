@@ -19,11 +19,7 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
   bash "$ROOT/scripts/build-linux.sh"
 fi
 
-VERSION="$(awk -F'"' '/^version = "/ { print $2; exit }' Cargo.toml)"
-if [ -z "$VERSION" ]; then
-  echo "Could not read workspace version from Cargo.toml" >&2
-  exit 1
-fi
+VERSION="$(bash "$ROOT/scripts/release-version.sh")"
 ARCH="$(uname -m)"
 case "$ARCH" in
   x86_64 | amd64) ARCH=x86_64 ;;
