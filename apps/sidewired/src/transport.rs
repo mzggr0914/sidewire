@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use sidewire_protocol::{
-    Frame, FrameKind, SecureFrameWriter, SharedNoise, StreamWindowUpdate, frame, raw_frame,
+    FlowCredit, FlowKind, Frame, FrameKind, SecureFrameWriter, SharedNoise, raw_frame,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -15,51 +15,10 @@ use tokio::{
 };
 
 const WRITER_QUEUE_CAPACITY: usize = 16;
-const MAX_FLOW_CREDIT: usize = 16 * 1024 * 1024;
 
 struct WriterCommand {
     frame: Frame,
     done: oneshot::Sender<std::result::Result<(), String>>,
-}
-
-struct FlowCredit {
-    available: StdMutex<usize>,
-    notify: Notify,
-}
-
-impl FlowCredit {
-    fn new() -> Self {
-        Self {
-            available: StdMutex::new(0),
-            notify: Notify::new(),
-        }
-    }
-
-    fn add(&self, bytes: usize) -> Result<()> {
-        if bytes == 0 {
-            bail!("stream window update must grant at least one byte");
-        }
-        let mut available = self.available.lock().unwrap();
-        let Some(updated) = available.checked_add(bytes) else {
-            bail!("stream flow credit overflow");
-        };
-        if updated > MAX_FLOW_CREDIT {
-            bail!("stream flow credit exceeds {MAX_FLOW_CREDIT} bytes");
-        }
-        *available = updated;
-        drop(available);
-        self.notify.notify_waiters();
-        Ok(())
-    }
-
-    fn try_take(&self, bytes: usize) -> bool {
-        let mut available = self.available.lock().unwrap();
-        if *available < bytes {
-            return false;
-        }
-        *available -= bytes;
-        true
-    }
 }
 
 #[derive(Clone)]
@@ -72,6 +31,7 @@ pub(super) struct MuxWriter {
     flow_credits: Arc<StdMutex<HashMap<u32, Arc<FlowCredit>>>>,
     supports_stream_cancel: bool,
     supports_flow_control: bool,
+    supports_pty_flow_control: bool,
 }
 
 impl MuxWriter {
@@ -80,6 +40,7 @@ impl MuxWriter {
         noise: Option<SharedNoise>,
         supports_stream_cancel: bool,
         supports_flow_control: bool,
+        supports_pty_flow_control: bool,
     ) -> Self {
         let (writer_tx, mut writer_rx) = mpsc::channel(WRITER_QUEUE_CAPACITY);
         let failed = Arc::new(AtomicBool::new(false));
@@ -136,6 +97,7 @@ impl MuxWriter {
             flow_credits: Arc::new(StdMutex::new(HashMap::new())),
             supports_stream_cancel,
             supports_flow_control,
+            supports_pty_flow_control,
         }
     }
 
@@ -172,38 +134,57 @@ impl MuxWriter {
         }
     }
 
-    pub(super) fn register_flow_stream(&self, stream_id: u32) -> Result<()> {
-        if !self.supports_flow_control {
+    pub(super) fn supports_flow(&self, kind: FlowKind) -> bool {
+        match kind {
+            FlowKind::File => self.supports_flow_control,
+            FlowKind::Pty => self.supports_pty_flow_control,
+        }
+    }
+
+    pub(super) fn register_flow_stream(&self, stream_id: u32, kind: FlowKind) -> Result<()> {
+        if !self.supports_flow(kind) {
             return Ok(());
         }
         let mut credits = self.flow_credits.lock().unwrap();
-        if credits
-            .insert(stream_id, Arc::new(FlowCredit::new()))
-            .is_some()
-        {
+        let std::collections::hash_map::Entry::Vacant(entry) = credits.entry(stream_id) else {
             bail!("stream {stream_id} already has flow control state");
-        }
+        };
+        entry.insert(Arc::new(FlowCredit::new(kind)));
         Ok(())
     }
 
-    pub(super) fn add_flow_credit(&self, stream_id: u32, bytes: u32) -> Result<bool> {
-        if !self.supports_flow_control {
+    pub(super) fn add_flow_credit(
+        &self,
+        stream_id: u32,
+        kind: FlowKind,
+        credit: u32,
+    ) -> Result<bool> {
+        if !self.supports_flow(kind) {
             bail!("peer sent flow control update without negotiation");
         }
         let flow = self.flow_credits.lock().unwrap().get(&stream_id).cloned();
         let Some(flow) = flow else {
             return Ok(false);
         };
-        flow.add(bytes as usize)?;
+        if flow.kind != kind {
+            bail!("window update does not match stream type");
+        }
+        flow.add(credit)?;
         Ok(true)
     }
 
-    async fn acquire_flow_credit(&self, stream_id: u32, bytes: usize) -> Result<()> {
-        if !self.supports_flow_control || bytes == 0 {
+    async fn acquire_flow_credit(&self, stream_id: u32, kind: FrameKind, len: usize) -> Result<()> {
+        let flow_kind = match kind {
+            FrameKind::FileChunk => FlowKind::File,
+            FrameKind::PtyOutput | FrameKind::PtyCompleteResult => FlowKind::Pty,
+            _ => return Ok(()),
+        };
+        if !self.supports_flow(flow_kind) {
             return Ok(());
         }
-        if bytes > MAX_FLOW_CREDIT {
-            bail!("frame requires more than {MAX_FLOW_CREDIT} bytes of flow credit");
+        let credit = flow_kind.frame_cost(kind, len)?;
+        if credit == 0 {
+            return Ok(());
         }
         let flow = self
             .flow_credits
@@ -213,13 +194,13 @@ impl MuxWriter {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("missing flow control state for stream {stream_id}"))?;
         loop {
-            let credit_ready = flow.notify.notified();
+            let credit_ready = flow.notified();
             let failed = self.failed_notify.notified();
             self.ensure_active(stream_id)?;
             if self.failed.load(Ordering::Acquire) {
                 bail!("device connection writer stopped");
             }
-            if flow.try_take(bytes) {
+            if flow.try_take(credit)? {
                 return Ok(());
             }
             tokio::select! {
@@ -233,21 +214,16 @@ impl MuxWriter {
         if !self.supports_flow_control || bytes == 0 {
             return Ok(());
         }
-        self.ensure_active(stream_id)?;
         let bytes = u32::try_from(bytes)
             .map_err(|_| anyhow::anyhow!("stream window update exceeds u32"))?;
-        self.queue_frame(frame(
-            FrameKind::StreamWindowUpdate,
-            stream_id,
-            &StreamWindowUpdate { bytes },
-        )?)
-        .await
+        self.send(&FlowKind::File.window_update(stream_id, bytes)?)
+            .await
     }
 
     pub(super) fn cancel_local(&self, stream_id: u32) {
         self.canceled.lock().unwrap().insert(stream_id);
         if let Some(flow) = self.flow_credits.lock().unwrap().get(&stream_id).cloned() {
-            flow.notify.notify_waiters();
+            flow.notify_waiters();
         }
     }
 
@@ -268,15 +244,8 @@ impl MuxWriter {
     }
 
     pub(super) async fn send(&self, frame: &Frame) -> Result<()> {
-        self.ensure_active(frame.stream_id)?;
-        if frame.kind == FrameKind::FileChunk {
-            self.acquire_flow_credit(frame.stream_id, frame.payload.len())
-                .await?;
-            self.ensure_active(frame.stream_id)?;
-        }
-        let result = self.queue_frame(frame.clone()).await;
-        self.ensure_active(frame.stream_id)?;
-        result
+        self.send_raw(frame.kind, frame.stream_id, &frame.payload)
+            .await
     }
 
     pub(super) async fn send_raw(
@@ -286,10 +255,9 @@ impl MuxWriter {
         payload: &[u8],
     ) -> Result<()> {
         self.ensure_active(stream_id)?;
-        if kind == FrameKind::FileChunk {
-            self.acquire_flow_credit(stream_id, payload.len()).await?;
-            self.ensure_active(stream_id)?;
-        }
+        self.acquire_flow_credit(stream_id, kind, payload.len())
+            .await?;
+        self.ensure_active(stream_id)?;
         let result = self
             .queue_frame(raw_frame(kind, stream_id, payload.to_vec()))
             .await;
@@ -298,7 +266,6 @@ impl MuxWriter {
     }
 
     pub(super) async fn send_cancel(&self, stream_id: u32, reason: impl std::fmt::Display) {
-        self.cancel_local(stream_id);
         let message = reason.to_string();
         let kind = if self.supports_stream_cancel {
             FrameKind::StreamCancel
@@ -326,8 +293,8 @@ impl MuxWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::MuxWriter;
-    use sidewire_protocol::{FrameKind, SecureFrameReader};
+    use super::{FlowKind, MuxWriter};
+    use sidewire_protocol::{FrameKind, PTY_WINDOW_FRAMES, SecureFrameReader};
     use tokio::{
         net::{TcpListener, TcpStream},
         time::{Duration, timeout},
@@ -344,8 +311,8 @@ mod tests {
     async fn flow_control_blocks_file_chunks_until_credit() {
         let (client, server) = tcp_pair().await;
         let (_, write_half) = client.into_split();
-        let writer = MuxWriter::new(write_half, None, true, true);
-        writer.register_flow_stream(11).unwrap();
+        let writer = MuxWriter::new(write_half, None, true, true, false);
+        writer.register_flow_stream(11, FlowKind::File).unwrap();
         let sending = {
             let writer = writer.clone();
             tokio::spawn(async move {
@@ -361,13 +328,13 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(writer.add_flow_credit(11, 3).unwrap());
+        assert!(writer.add_flow_credit(11, FlowKind::File, 3).unwrap());
         assert!(
             timeout(Duration::from_millis(50), reader.read_frame())
                 .await
                 .is_err()
         );
-        assert!(writer.add_flow_credit(11, 1).unwrap());
+        assert!(writer.add_flow_credit(11, FlowKind::File, 1).unwrap());
         let chunk = timeout(Duration::from_secs(1), reader.read_frame())
             .await
             .unwrap()
@@ -382,8 +349,8 @@ mod tests {
     async fn flow_control_wait_is_canceled_locally() {
         let (client, _server) = tcp_pair().await;
         let (_, write_half) = client.into_split();
-        let writer = MuxWriter::new(write_half, None, true, true);
-        writer.register_flow_stream(12).unwrap();
+        let writer = MuxWriter::new(write_half, None, true, true, false);
+        writer.register_flow_stream(12, FlowKind::File).unwrap();
         let sending = {
             let writer = writer.clone();
             tokio::spawn(async move { writer.send_raw(FrameKind::FileChunk, 12, b"blocked").await })
@@ -400,12 +367,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pty_output_uses_frame_credit_and_cancel_wakes_the_sender() {
+        let (client, server) = tcp_pair().await;
+        let (_, write_half) = client.into_split();
+        let writer = MuxWriter::new(write_half, None, true, false, true);
+        writer.register_flow_stream(12, FlowKind::Pty).unwrap();
+        let sending = {
+            let writer = writer.clone();
+            tokio::spawn(async move {
+                for _ in 0..PTY_WINDOW_FRAMES {
+                    writer
+                        .send_raw(FrameKind::PtyOutput, 12, b"x")
+                        .await
+                        .unwrap();
+                }
+                writer.send_raw(FrameKind::PtyOutput, 12, b"blocked").await
+            })
+        };
+        let mut reader = SecureFrameReader::new(server, None);
+        for _ in 0..PTY_WINDOW_FRAMES {
+            let received = timeout(Duration::from_secs(1), reader.read_frame())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(received.kind, FrameKind::PtyOutput);
+            assert_eq!(received.payload, b"x");
+        }
+        assert!(
+            timeout(Duration::from_millis(30), reader.read_frame())
+                .await
+                .is_err()
+        );
+
+        writer.send_raw(FrameKind::Pong, 13, b"ok").await.unwrap();
+        let pong = timeout(Duration::from_secs(1), reader.read_frame())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pong.kind, FrameKind::Pong);
+        writer.cancel_local(12);
+        let error = timeout(Duration::from_secs(1), sending)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("canceled"));
+    }
+
+    #[tokio::test]
     async fn cancel_is_stream_scoped_and_signaled() {
         let (client, server) = tcp_pair().await;
         let (_, write_half) = client.into_split();
-        let writer = MuxWriter::new(write_half, None, true, false);
+        let writer = MuxWriter::new(write_half, None, true, false, false);
         let mut reader = SecureFrameReader::new(server, None);
 
+        writer.cancel_local(7);
         writer.send_cancel(7, "overflow").await;
         let frame = reader.read_frame().await.unwrap();
         assert_eq!(frame.kind, FrameKind::StreamCancel);
@@ -423,7 +439,7 @@ mod tests {
     async fn legacy_peer_gets_error_instead_of_unknown_cancel_kind() {
         let (client, server) = tcp_pair().await;
         let (_, write_half) = client.into_split();
-        let writer = MuxWriter::new(write_half, None, false, false);
+        let writer = MuxWriter::new(write_half, None, false, false, false);
         let mut reader = SecureFrameReader::new(server, None);
 
         writer.send_cancel(9, "overflow").await;

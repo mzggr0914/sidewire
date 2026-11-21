@@ -2,16 +2,10 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use sidewire_protocol::{
     ClipboardData, ClipboardSetRequest, DeviceId, ExecExit, ExecIdentity, ExecRequest, FileMeta,
-    FilePullRequest, FilePushRequest, Frame, FrameKind, HelloAck, ProxyStartAck, ProxyStartRequest,
-    ProxyTokenMode, PtyOpenRequest, SecureFrameReader, SecureFrameWriter, SecurityMode,
-    StreamWindowUpdate, decode, frame,
+    FilePullRequest, FilePushRequest, FlowKind, Frame, FrameKind, HelloAck, PTY_WINDOW_FRAMES,
+    ProxyStartAck, ProxyStartRequest, ProxyTokenMode, PtyOpenRequest, SecureFrameReader,
+    SecureFrameWriter, SecurityMode, decode, frame,
 };
-#[cfg(target_os = "android")]
-use sidewire_protocol::{PtyCompleteRequest, PtyExit, PtyOpenAck, PtyResize};
-#[cfg(target_os = "android")]
-use std::fs::File as StdFile;
-#[cfg(target_os = "android")]
-use std::os::fd::{AsRawFd, FromRawFd};
 use std::{
     collections::HashMap,
     fs,
@@ -20,6 +14,8 @@ use std::{
 };
 mod clipboard;
 mod completion;
+#[cfg(any(target_os = "android", all(target_os = "linux", test)))]
+mod pty;
 mod security;
 mod transport;
 
@@ -29,6 +25,7 @@ use transport::MuxWriter;
 const FILE_BUFFER_SIZE: usize = 256 * 1024;
 const PROXY_BUFFER_SIZE: usize = 64 * 1024;
 const STREAM_ROUTE_CAPACITY: usize = 16;
+const _: () = assert!(STREAM_ROUTE_CAPACITY > PTY_WINDOW_FRAMES + 1);
 const HOST_SILENCE_TIMEOUT_SECS: u64 = 45;
 const CONNECT_TIMEOUT_SECS: u64 = 5;
 const CONNECTION_SETUP_TIMEOUT_SECS: u64 = 10;
@@ -481,6 +478,9 @@ fn daemon_capabilities(clipboard: Option<&SharedClipboardHelper>) -> u64 {
         | sidewire_protocol::capabilities::HEARTBEAT
         | sidewire_protocol::capabilities::STREAM_CANCEL
         | sidewire_protocol::capabilities::FLOW_CONTROL;
+    if cfg!(target_os = "android") {
+        capabilities |= sidewire_protocol::capabilities::PTY_FLOW_CONTROL;
+    }
     if clipboard.is_some() {
         capabilities |= sidewire_protocol::capabilities::CLIPBOARD;
     }
@@ -586,6 +586,10 @@ async fn serve(mut stream: TcpStream, options: ServeOptions) -> Result<()> {
     let supports_flow_control = sidewire_protocol::protocol_minor(negotiated_protocol)
         >= FLOW_CONTROL_PROTOCOL_MINOR
         && negotiated_capabilities & sidewire_protocol::capabilities::FLOW_CONTROL != 0;
+    let supports_pty_flow_control = sidewire_protocol::capabilities::supports_pty_flow_control(
+        negotiated_protocol,
+        negotiated_capabilities,
+    );
     if let Some(established) = established.take() {
         let _ = established.send(());
     }
@@ -597,6 +601,7 @@ async fn serve(mut stream: TcpStream, options: ServeOptions) -> Result<()> {
         noise,
         supports_stream_cancel,
         supports_flow_control,
+        supports_pty_flow_control,
     );
     let routes: StreamRoutes = Arc::new(StdMutex::new(HashMap::new()));
     let cancels: StreamCancels = Arc::new(StdMutex::new(HashMap::new()));
@@ -627,9 +632,9 @@ async fn serve(mut stream: TcpStream, options: ServeOptions) -> Result<()> {
                 _ = writer.wait_failed() => bail!("device connection writer stopped"),
             };
             let stream_id = request.stream_id;
-            if request.kind == FrameKind::StreamWindowUpdate {
-                let update: StreamWindowUpdate = decode(&request.payload)?;
-                if !writer.add_flow_credit(stream_id, update.bytes)? {
+            if matches!(request.kind, FrameKind::StreamWindowUpdate | FrameKind::PtyWindowUpdate) {
+                let (kind, credit) = FlowKind::decode_window_update(&request)?;
+                if !writer.add_flow_credit(stream_id, kind, credit)? {
                     tracing::debug!(stream_id, "dropping late window update for inactive stream");
                 }
                 continue;
@@ -652,7 +657,11 @@ async fn serve(mut stream: TcpStream, options: ServeOptions) -> Result<()> {
                 match sender.try_send(request) {
                     Ok(()) => {}
                     Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        writer.cancel_local(stream_id);
                         routes.lock().unwrap().remove(&stream_id);
+                        if let Some(cancel) = cancels.lock().unwrap().remove(&stream_id) {
+                            let _ = cancel.send(true);
+                        }
                         let reason =
                             format!("stream {stream_id} receive queue overflow; stream canceled");
                         tracing::warn!(stream_id, "host stream receive queue overflow");
@@ -703,7 +712,7 @@ async fn serve(mut stream: TcpStream, options: ServeOptions) -> Result<()> {
                 }
                 FrameKind::PullRequest => {
                     let cancel = register_cancel(&cancels, stream_id).await?;
-                    writer.register_flow_stream(stream_id)?;
+                    writer.register_flow_stream(stream_id, FlowKind::File)?;
                     let writer = writer.clone();
                     let cancels = cancels.clone();
                     tokio::spawn(async move {
@@ -718,8 +727,11 @@ async fn serve(mut stream: TcpStream, options: ServeOptions) -> Result<()> {
                 }
                 FrameKind::PtyOpen => {
                     let mut inbox = register_stream(&routes, stream_id).await?;
+                    let cancel = register_cancel(&cancels, stream_id).await?;
+                    writer.register_flow_stream(stream_id, FlowKind::Pty)?;
                     let writer = writer.clone();
                     let routes = routes.clone();
+                    let cancels = cancels.clone();
                     let device_name = name.to_owned();
                     tokio::spawn(async move {
                         let result = handle_pty(
@@ -727,10 +739,12 @@ async fn serve(mut stream: TcpStream, options: ServeOptions) -> Result<()> {
                             stream_id,
                             &request.payload,
                             &mut inbox,
+                            cancel,
                             &device_name,
                         )
                         .await;
                         unregister_stream(&routes, stream_id).await;
+                        unregister_cancel(&cancels, stream_id).await;
                         if let Err(error) = result {
                             writer.send_error(stream_id, error).await;
                         }
@@ -1352,298 +1366,24 @@ async fn handle_pull(
     Ok(())
 }
 
-#[cfg(target_os = "android")]
-fn set_pty_size(fd: std::os::fd::RawFd, cols: u16, rows: u16) -> std::io::Result<()> {
-    let size = libc::winsize {
-        ws_row: rows,
-        ws_col: cols,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    let rc = unsafe { libc::ioctl(fd, libc::TIOCSWINSZ as _, &size) };
-    if rc < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "android")]
-fn dup_cloexec(fd: std::os::fd::RawFd) -> std::io::Result<std::os::fd::RawFd> {
-    let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
-    if duplicated < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(duplicated)
-}
-
-#[cfg(target_os = "android")]
-fn open_pty_master(
-    cols: u16,
-    rows: u16,
-) -> Result<(tokio::fs::File, tokio::fs::File, StdFile, std::ffi::CString)> {
-    // Tokio fs::File serializes read/write through one Busy state.
-    // Keep independent file objects for PTY input and output.
-    let master_fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
-    if master_fd < 0 {
-        return Err(std::io::Error::last_os_error()).context("posix_openpt");
-    }
-    if unsafe { libc::grantpt(master_fd) } < 0 {
-        let error = std::io::Error::last_os_error();
-        unsafe {
-            libc::close(master_fd);
-        }
-        return Err(error).context("grantpt");
-    }
-    if unsafe { libc::unlockpt(master_fd) } < 0 {
-        let error = std::io::Error::last_os_error();
-        unsafe {
-            libc::close(master_fd);
-        }
-        return Err(error).context("unlockpt");
-    }
-    let mut name = [0 as libc::c_char; 128];
-    let rc = unsafe { libc::ptsname_r(master_fd, name.as_mut_ptr(), name.len()) };
-    if rc != 0 {
-        unsafe {
-            libc::close(master_fd);
-        }
-        return Err(std::io::Error::from_raw_os_error(rc)).context("ptsname_r");
-    }
-    if let Err(error) = set_pty_size(master_fd, cols, rows) {
-        unsafe {
-            libc::close(master_fd);
-        }
-        return Err(error).context("set initial PTY size");
-    }
-    let write_fd = match dup_cloexec(master_fd) {
-        Ok(fd) => fd,
-        Err(error) => {
-            unsafe {
-                libc::close(master_fd);
-            }
-            return Err(error).context("duplicate PTY master for writes");
-        }
-    };
-    let resize_fd = match dup_cloexec(master_fd) {
-        Ok(fd) => fd,
-        Err(error) => {
-            unsafe {
-                libc::close(master_fd);
-                libc::close(write_fd);
-            }
-            return Err(error).context("duplicate PTY master for resize");
-        }
-    };
-    let slave_name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()).to_owned() };
-    let read_file = unsafe { StdFile::from_raw_fd(master_fd) };
-    let write_file = unsafe { StdFile::from_raw_fd(write_fd) };
-    let resize_file = unsafe { StdFile::from_raw_fd(resize_fd) };
-    Ok((
-        tokio::fs::File::from_std(read_file),
-        tokio::fs::File::from_std(write_file),
-        resize_file,
-        slave_name,
-    ))
-}
-
-#[cfg(target_os = "android")]
-fn configure_pty_child(slave_name: &std::ffi::CStr, echo: bool) -> std::io::Result<()> {
-    if unsafe { libc::setsid() } < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let slave_fd = unsafe { libc::open(slave_name.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
-    if slave_fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let mut attrs: libc::termios = unsafe { std::mem::zeroed() };
-    if unsafe { libc::tcgetattr(slave_fd, &mut attrs) } != 0 {
-        let error = std::io::Error::last_os_error();
-        unsafe {
-            libc::close(slave_fd);
-        }
-        return Err(error);
-    }
-    if echo {
-        attrs.c_lflag |= libc::ECHO;
-    } else {
-        attrs.c_lflag &= !(libc::ECHO | libc::ECHONL);
-    }
-    if unsafe { libc::tcsetattr(slave_fd, libc::TCSANOW, &attrs) } != 0 {
-        let error = std::io::Error::last_os_error();
-        unsafe {
-            libc::close(slave_fd);
-        }
-        return Err(error);
-    }
-    if unsafe { libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) } < 0 {
-        let error = std::io::Error::last_os_error();
-        unsafe {
-            libc::close(slave_fd);
-        }
-        return Err(error);
-    }
-    for target in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
-        if unsafe { libc::dup2(slave_fd, target) } < 0 {
-            let error = std::io::Error::last_os_error();
-            unsafe {
-                libc::close(slave_fd);
-            }
-            return Err(error);
-        }
-    }
-    if slave_fd > libc::STDERR_FILENO {
-        unsafe {
-            libc::close(slave_fd);
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "android")]
-fn terminate_pty_group(pid: u32) {
-    if pid == 0 {
-        return;
-    }
-    unsafe {
-        libc::kill(-(pid as libc::pid_t), libc::SIGHUP);
-        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-    }
-}
-
 async fn handle_pty(
     writer: &MuxWriter,
     stream_id: u32,
     payload: &[u8],
     inbox: &mut tokio::sync::mpsc::Receiver<Frame>,
+    cancel: tokio::sync::watch::Receiver<bool>,
     device_name: &str,
 ) -> Result<()> {
     let request: PtyOpenRequest = decode(payload)?;
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (writer, stream_id, request, inbox, device_name);
+        let _ = (writer, stream_id, request, inbox, cancel, device_name);
         bail!("PTY is only supported by the Android daemon");
     }
     #[cfg(target_os = "android")]
     {
         let hostname = sanitize_shell_hostname(device_name).unwrap_or_else(android_shell_hostname);
-        let (mut master_read, mut master_write, resize, slave_name) =
-            open_pty_master(request.cols.max(1), request.rows.max(1))?;
-        let mut command = command_for_identity(&request.program, &request.args, request.identity);
-        command
-            .env("TERM", &request.term)
-            .env("COLORTERM", "truecolor")
-            .env("HOSTNAME", hostname)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let echo = request.echo;
-        unsafe {
-            command.pre_exec(move || configure_pty_child(&slave_name, echo));
-        }
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("spawn PTY program {}", request.program))?;
-        let pid = child.id().unwrap_or(0);
-        writer
-            .send(&frame(
-                FrameKind::PtyOpenAck,
-                stream_id,
-                &PtyOpenAck { pid },
-            )?)
-            .await?;
-
-        let (done_tx, mut done_rx) = tokio::sync::watch::channel(false);
-
-        let output_loop = async {
-            let mut buffer = vec![0u8; 64 * 1024];
-            loop {
-                match master_read.read(&mut buffer).await {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if let Err(error) = writer
-                            .send_raw(FrameKind::PtyOutput, stream_id, &buffer[..n])
-                            .await
-                        {
-                            terminate_pty_group(pid);
-                            return Err(error).context("write PTY output");
-                        }
-                    }
-                    Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
-                    Err(error) => {
-                        let _ = done_tx.send(true);
-                        return Err(error).context("read PTY master");
-                    }
-                }
-            }
-            let _ = done_tx.send(true);
-            Ok::<(), anyhow::Error>(())
-        };
-
-        let input_loop = async {
-            loop {
-                tokio::select! {
-                    _ = done_rx.changed() => return Ok::<(), anyhow::Error>(()),
-                    incoming = inbox.recv() => {
-                        let Some(incoming) = incoming else {
-                            terminate_pty_group(pid);
-                            let _ = child.start_kill();
-                            bail!("device connection closed while PTY {stream_id} was active");
-                        };
-                        if incoming.stream_id != stream_id {
-                            terminate_pty_group(pid);
-                                let _ = child.start_kill();
-                            bail!("unexpected stream {} while PTY {stream_id} is active", incoming.stream_id);
-                        }
-                        match incoming.kind {
-                            FrameKind::PtyInput => {
-                                master_write.write_all(&incoming.payload).await?;
-                            }
-                            FrameKind::PtyResize => {
-                                let size: PtyResize = decode(&incoming.payload)?;
-                                set_pty_size(resize.as_raw_fd(), size.cols.max(1), size.rows.max(1))?;
-                            }
-                            FrameKind::PtyComplete => {
-                                let request: PtyCompleteRequest = decode(&incoming.payload)?;
-                                let completion = tokio::task::spawn_blocking(move || {
-                                    completion::complete_pty_path(pid, &request)
-                                })
-                                .await
-                                .context("join PTY completion worker")??;
-                                writer
-                                    .send(&frame(
-                                        FrameKind::PtyCompleteResult,
-                                        stream_id,
-                                        &completion,
-                                    )?)
-                                    .await?;
-                            }
-                            FrameKind::PtyClose => {
-                                terminate_pty_group(pid);
-                                let _ = child.start_kill();
-                                return Ok::<(), anyhow::Error>(());
-                            }
-                            kind => {
-                                terminate_pty_group(pid);
-                                let _ = child.start_kill();
-                                bail!("unexpected PTY frame {kind:?}");
-                            }
-                        }
-                    }
-                }
-            }
-        };
-
-        let (input_result, output_result) = tokio::join!(input_loop, output_loop);
-        input_result?;
-        output_result?;
-        let status = child.wait().await?;
-        let exit = PtyExit {
-            code: status.code(),
-        };
-        writer
-            .send(&frame(FrameKind::PtyExit, stream_id, &exit)?)
-            .await?;
-        Ok(())
+        pty::run(writer, stream_id, request, inbox, cancel, &hostname).await
     }
 }
 

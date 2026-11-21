@@ -1,5 +1,10 @@
 use super::*;
 
+#[cfg(any(windows, test))]
+mod windows_console;
+#[cfg(windows)]
+use windows_console::RawModeGuard;
+
 enum ConsoleEvent {
     Input(Vec<u8>),
     Resize {
@@ -23,42 +28,20 @@ struct LineDisplayState {
     prompt_tail: std::sync::Mutex<String>,
 }
 
-struct RawModeGuard {
-    #[cfg(windows)]
-    original_mode: u32,
-}
+#[cfg(not(windows))]
+struct RawModeGuard;
 
+#[cfg(not(windows))]
 impl RawModeGuard {
     fn enable() -> Result<Self> {
-        #[cfg(windows)]
-        let original_mode = {
-            const STD_INPUT_HANDLE: u32 = -10i32 as u32;
-            let handle = windows_console_handle(STD_INPUT_HANDLE)
-                .context("stdin is not a Windows console")?;
-            let mut mode = 0;
-            if unsafe { get_console_mode(handle, &mut mode) } == 0 {
-                return Err(std::io::Error::last_os_error()).context("read console mode");
-            }
-            mode
-        };
         crossterm::terminal::enable_raw_mode().context("enable terminal raw mode")?;
-        Ok(Self {
-            #[cfg(windows)]
-            original_mode,
-        })
+        Ok(Self)
     }
 }
 
+#[cfg(not(windows))]
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
-        #[cfg(windows)]
-        {
-            const STD_INPUT_HANDLE: u32 = -10i32 as u32;
-            if let Some(handle) = windows_console_handle(STD_INPUT_HANDLE) {
-                unsafe { set_console_mode(handle, self.original_mode) };
-            }
-        }
-        #[cfg(not(windows))]
         let _ = crossterm::terminal::disable_raw_mode();
     }
 }
@@ -185,9 +168,17 @@ fn key_bytes(key: crossterm::event::KeyEvent) -> Option<Vec<u8>> {
 
 fn spawn_console_reader(
     stop: Arc<AtomicBool>,
-    tx: tokio::sync::mpsc::UnboundedSender<ConsoleEvent>,
+    tx: tokio::sync::mpsc::Sender<ConsoleEvent>,
+    #[cfg(windows)] use_vt: bool,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
+        #[cfg(windows)]
+        if use_vt {
+            if let Err(error) = windows_console::read_input(&stop, &tx) {
+                let _ = tx.blocking_send(ConsoleEvent::Error(format!("{error:#}")));
+            }
+            return;
+        }
         use crossterm::event::{Event, poll, read};
         #[cfg(windows)]
         let mut last_size = crossterm::terminal::size().ok();
@@ -198,7 +189,7 @@ fn spawn_console_reader(
             {
                 last_size = Some(size);
                 if tx
-                    .send(ConsoleEvent::Resize {
+                    .blocking_send(ConsoleEvent::Resize {
                         cols: size.0,
                         rows: size.1,
                     })
@@ -211,7 +202,7 @@ fn spawn_console_reader(
                 Ok(false) => continue,
                 Ok(true) => {}
                 Err(error) => {
-                    let _ = tx.send(ConsoleEvent::Error(format!(
+                    let _ = tx.blocking_send(ConsoleEvent::Error(format!(
                         "terminal event poll failed: {error}"
                     )));
                     break;
@@ -220,19 +211,22 @@ fn spawn_console_reader(
             match read() {
                 Ok(Event::Key(key)) => {
                     if let Some(bytes) = key_bytes(key)
-                        && tx.send(ConsoleEvent::Input(bytes)).is_err()
+                        && tx.blocking_send(ConsoleEvent::Input(bytes)).is_err()
                     {
                         break;
                     }
                 }
                 Ok(Event::Resize(cols, rows)) => {
-                    if tx.send(ConsoleEvent::Resize { cols, rows }).is_err() {
+                    if tx
+                        .blocking_send(ConsoleEvent::Resize { cols, rows })
+                        .is_err()
+                    {
                         break;
                     }
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    let _ = tx.send(ConsoleEvent::Error(format!(
+                    let _ = tx.blocking_send(ConsoleEvent::Error(format!(
                         "terminal event read failed: {error}"
                     )));
                     break;
@@ -280,13 +274,18 @@ pub(super) async fn run_pty_client(
 
     let raw_guard = RawModeGuard::enable()?;
     let stop = Arc::new(AtomicBool::new(false));
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let input_reader = spawn_console_reader(stop.clone(), event_tx);
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(sidewire_protocol::PTY_WINDOW_FRAMES);
+    let input_reader = spawn_console_reader(
+        stop.clone(),
+        event_tx,
+        #[cfg(windows)]
+        raw_guard.use_vt(),
+    );
     let stream_id = 0x5054_5901;
     let mut stdout = crate::console_output::StreamOutput::stdout();
     let (mut net_read, mut net_write) = tokio::io::split(reader);
-    let input_loop = async {
-        const RAW_BATCH_BYTES: usize = 4 * 1024;
+    let input_loop = async move {
+        use sidewire_protocol::PTY_FRAME_BYTES;
         let mut pending = None;
         loop {
             let event = match pending.take() {
@@ -298,7 +297,7 @@ pub(super) async fn run_pty_client(
             };
             match event {
                 ConsoleEvent::Input(mut bytes) => {
-                    while bytes.len() < RAW_BATCH_BYTES {
+                    while bytes.len() < PTY_FRAME_BYTES {
                         match event_rx.try_recv() {
                             Ok(ConsoleEvent::Input(more)) => bytes.extend_from_slice(&more),
                             Ok(other) => {
@@ -308,7 +307,10 @@ pub(super) async fn run_pty_client(
                             Err(_) => break,
                         }
                     }
-                    write_raw_frame(&mut net_write, FrameKind::PtyInput, stream_id, &bytes).await?;
+                    for input in bytes.chunks(PTY_FRAME_BYTES) {
+                        write_raw_frame(&mut net_write, FrameKind::PtyInput, stream_id, input)
+                            .await?;
+                    }
                 }
                 ConsoleEvent::Resize { cols, rows } => {
                     let resize = frame(FrameKind::PtyResize, stream_id, &PtyResize { cols, rows })?;
@@ -360,11 +362,9 @@ pub(super) async fn run_pty_client(
         }
     };
 
-    tokio::pin!(input_loop);
-    tokio::pin!(output_loop);
     let result = tokio::select! {
-        result = &mut input_loop => result,
-        result = &mut output_loop => result,
+        result = input_loop => result,
+        result = output_loop => result,
     };
     stop.store(true, Ordering::Relaxed);
     let _ = input_reader.await;
@@ -451,8 +451,6 @@ unsafe extern "system" {
     fn get_std_handle(std_handle: u32) -> *mut std::ffi::c_void;
     #[link_name = "GetConsoleMode"]
     fn get_console_mode(console: *mut std::ffi::c_void, mode: *mut u32) -> i32;
-    #[link_name = "SetConsoleMode"]
-    fn set_console_mode(console: *mut std::ffi::c_void, mode: u32) -> i32;
     #[link_name = "ReadConsoleW"]
     fn read_console_w(
         console: *mut std::ffi::c_void,

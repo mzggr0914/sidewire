@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use sidewire_protocol::{
-    Frame, FrameKind, SecureFrameReader, SecureFrameWriter, SharedNoise, StreamWindowUpdate,
-    capabilities, decode, frame, protocol_minor, raw_frame,
+    FlowCredit, FlowKind, Frame, FrameKind, PTY_WINDOW_FRAMES, SecureFrameReader,
+    SecureFrameWriter, SharedNoise, capabilities, protocol_minor, raw_frame,
 };
 use std::{
     collections::HashMap,
@@ -19,51 +19,11 @@ const ROUTE_CAPACITY: usize = 16;
 const WRITER_QUEUE_CAPACITY: usize = 16;
 const STREAM_CANCEL_PROTOCOL_MINOR: u8 = 1;
 const FLOW_CONTROL_PROTOCOL_MINOR: u8 = 2;
-const MAX_FLOW_CREDIT: usize = 16 * 1024 * 1024;
+const _: () = assert!(ROUTE_CAPACITY > PTY_WINDOW_FRAMES + 1);
 
 #[derive(Clone)]
 pub(super) struct DeviceTransport {
     inner: Arc<TransportInner>,
-}
-
-struct FlowCredit {
-    available: StdMutex<usize>,
-    notify: Notify,
-}
-
-impl FlowCredit {
-    fn new() -> Self {
-        Self {
-            available: StdMutex::new(0),
-            notify: Notify::new(),
-        }
-    }
-
-    fn add(&self, bytes: usize) -> Result<()> {
-        if bytes == 0 {
-            bail!("stream window update must grant at least one byte");
-        }
-        let mut available = self.available.lock().unwrap();
-        let updated = available
-            .checked_add(bytes)
-            .context("stream flow credit overflow")?;
-        if updated > MAX_FLOW_CREDIT {
-            bail!("stream flow credit exceeds {MAX_FLOW_CREDIT} bytes");
-        }
-        *available = updated;
-        drop(available);
-        self.notify.notify_waiters();
-        Ok(())
-    }
-
-    fn try_take(&self, bytes: usize) -> bool {
-        let mut available = self.available.lock().unwrap();
-        if *available < bytes {
-            return false;
-        }
-        *available -= bytes;
-        true
-    }
 }
 
 #[derive(Clone)]
@@ -87,15 +47,21 @@ struct TransportInner {
     closed_notify: Notify,
     supports_stream_cancel: bool,
     supports_flow_control: bool,
+    supports_pty_flow_control: bool,
 }
 
 pub(super) struct DeviceStream {
+    send: DeviceStreamSender,
+    receiver: mpsc::Receiver<Frame>,
+    completed: bool,
+}
+
+#[derive(Clone)]
+pub(super) struct DeviceStreamSender {
     id: u32,
     transport: DeviceTransport,
-    receiver: mpsc::Receiver<Frame>,
     cancel: watch::Receiver<Option<String>>,
     flow: Option<Arc<FlowCredit>>,
-    completed: bool,
 }
 
 fn frame_completes_stream(kind: FrameKind) -> bool {
@@ -177,6 +143,10 @@ impl DeviceTransport {
                 && peer_capabilities & capabilities::STREAM_CANCEL != 0,
             supports_flow_control: protocol_minor(protocol) >= FLOW_CONTROL_PROTOCOL_MINOR
                 && peer_capabilities & capabilities::FLOW_CONTROL != 0,
+            supports_pty_flow_control: capabilities::supports_pty_flow_control(
+                protocol,
+                peer_capabilities,
+            ),
         });
         let transport = Self {
             inner: inner.clone(),
@@ -240,18 +210,25 @@ impl DeviceTransport {
                     }
                 };
                 let stream_id = frame.stream_id;
-                if frame.kind == FrameKind::StreamWindowUpdate {
-                    if !inner.supports_flow_control {
-                        tracing::warn!(stream_id, "unexpected stream window update from peer");
-                        break;
-                    }
-                    let update = match decode::<StreamWindowUpdate>(&frame.payload) {
+                if matches!(
+                    frame.kind,
+                    FrameKind::StreamWindowUpdate | FrameKind::PtyWindowUpdate
+                ) {
+                    let (kind, credit) = match FlowKind::decode_window_update(&frame) {
                         Ok(update) => update,
                         Err(error) => {
                             tracing::warn!(stream_id, %error, "invalid stream window update");
                             break;
                         }
                     };
+                    let negotiated = match kind {
+                        FlowKind::File => inner.supports_flow_control,
+                        FlowKind::Pty => inner.supports_pty_flow_control,
+                    };
+                    if !negotiated {
+                        tracing::warn!(stream_id, "unexpected stream window update from peer");
+                        break;
+                    }
                     let flow = inner
                         .routes
                         .lock()
@@ -259,7 +236,11 @@ impl DeviceTransport {
                         .get(&stream_id)
                         .and_then(|route| route.flow.clone());
                     if let Some(flow) = flow {
-                        if let Err(error) = flow.add(update.bytes as usize) {
+                        if kind != flow.kind {
+                            tracing::warn!(stream_id, "window update does not match stream type");
+                            break;
+                        }
+                        if let Err(error) = flow.add(credit) {
                             tracing::warn!(stream_id, %error, "invalid stream flow credit");
                             break;
                         }
@@ -330,10 +311,6 @@ impl DeviceTransport {
         self.inner.routes.lock().unwrap().clear();
     }
 
-    pub(super) async fn send_frame(&self, frame: &Frame) -> Result<()> {
-        queued_write(&self.inner, frame.clone()).await
-    }
-
     pub(super) async fn send_raw(
         &self,
         kind: FrameKind,
@@ -344,6 +321,18 @@ impl DeviceTransport {
     }
 
     pub(super) async fn open_stream(&self) -> Result<DeviceStream> {
+        self.open_stream_with_flow(self.inner.supports_flow_control.then_some(FlowKind::File))
+    }
+
+    pub(super) fn open_pty_stream(&self) -> Result<DeviceStream> {
+        self.open_stream_with_flow(
+            self.inner
+                .supports_pty_flow_control
+                .then_some(FlowKind::Pty),
+        )
+    }
+
+    fn open_stream_with_flow(&self, kind: Option<FlowKind>) -> Result<DeviceStream> {
         if self.inner.closed.load(Ordering::Acquire) {
             bail!("device connection is closed");
         }
@@ -354,10 +343,7 @@ impl DeviceTransport {
             }
             let (sender, receiver) = mpsc::channel(ROUTE_CAPACITY);
             let (cancel_sender, cancel) = watch::channel(None);
-            let flow = self
-                .inner
-                .supports_flow_control
-                .then(|| Arc::new(FlowCredit::new()));
+            let flow = kind.map(|kind| Arc::new(FlowCredit::new(kind)));
             let mut routes = self.inner.routes.lock().unwrap();
             if self.inner.closed.load(Ordering::Acquire) {
                 bail!("device connection is closed");
@@ -374,11 +360,13 @@ impl DeviceTransport {
                 },
             );
             return Ok(DeviceStream {
-                id,
-                transport: self.clone(),
+                send: DeviceStreamSender {
+                    id,
+                    transport: self.clone(),
+                    cancel,
+                    flow,
+                },
                 receiver,
-                cancel,
-                flow,
                 completed: false,
             });
         }
@@ -395,11 +383,7 @@ impl DeviceTransport {
     }
 }
 
-impl DeviceStream {
-    pub(super) fn id(&self) -> u32 {
-        self.id
-    }
-
+impl DeviceStreamSender {
     fn cancel_reason(&self) -> Option<String> {
         self.cancel.borrow().clone()
     }
@@ -414,58 +398,45 @@ impl DeviceStream {
         Ok(())
     }
 
-    async fn acquire_flow_credit(&self, bytes: usize) -> Result<()> {
+    async fn acquire_flow_credit(&self, kind: FrameKind, len: usize) -> Result<()> {
         let Some(flow) = &self.flow else {
             return Ok(());
         };
-        if bytes == 0 {
+        let credit = flow.kind.frame_cost(kind, len)?;
+        if credit == 0 {
             return Ok(());
-        }
-        if bytes > MAX_FLOW_CREDIT {
-            bail!("frame requires more than {MAX_FLOW_CREDIT} bytes of flow credit");
         }
         let mut cancel = self.cancel.clone();
         loop {
-            let credit_ready = flow.notify.notified();
+            let credit_ready = flow.notified();
             let closed = self.transport.inner.closed_notify.notified();
             self.ensure_active()?;
-            if flow.try_take(bytes) {
+            if flow.try_take(credit)? {
                 return Ok(());
             }
             tokio::select! {
                 _ = credit_ready => {}
                 _ = closed => self.ensure_active()?,
                 changed = cancel.changed() => {
-                    if changed.is_ok()
-                        && let Some(reason) = cancel.borrow().clone()
-                    {
-                        bail!(reason);
-                    }
                     self.ensure_active()?;
+                    changed.context("device stream closed while waiting for flow credit")?;
                 }
             }
         }
     }
 
-    pub(super) fn uses_flow_control(&self) -> bool {
-        self.flow.is_some()
+    pub(super) fn uses_pty_flow_control(&self) -> bool {
+        self.flow
+            .as_ref()
+            .is_some_and(|flow| flow.kind == FlowKind::Pty)
     }
 
-    pub(super) async fn grant_window(&self, bytes: usize) -> Result<()> {
-        if !self.uses_flow_control() || bytes == 0 {
-            return Ok(());
-        }
-        let bytes = u32::try_from(bytes).context("stream window update exceeds u32")?;
-        self.send(&frame(
-            FrameKind::StreamWindowUpdate,
-            self.id,
-            &StreamWindowUpdate { bytes },
-        )?)
-        .await
+    pub(super) async fn grant_pty_window(&self, frames: u32) -> Result<()> {
+        self.send(&FlowKind::Pty.window_update(self.id, frames)?)
+            .await
     }
 
     pub(super) async fn send(&self, frame: &Frame) -> Result<()> {
-        self.ensure_active()?;
         if frame.stream_id != self.id {
             bail!(
                 "frame stream {} does not match routed stream {}",
@@ -473,28 +444,54 @@ impl DeviceStream {
                 self.id
             );
         }
-        if frame.kind == FrameKind::FileChunk {
-            self.acquire_flow_credit(frame.payload.len()).await?;
-            self.ensure_active()?;
-        }
-        let result = self.transport.send_frame(frame).await;
-        self.ensure_active()?;
-        result
+        self.send_raw(frame.kind, &frame.payload).await
     }
 
     pub(super) async fn send_raw(&self, kind: FrameKind, payload: &[u8]) -> Result<()> {
         self.ensure_active()?;
-        if kind == FrameKind::FileChunk {
-            self.acquire_flow_credit(payload.len()).await?;
-            self.ensure_active()?;
-        }
+        self.acquire_flow_credit(kind, payload.len()).await?;
+        self.ensure_active()?;
         let result = self.transport.send_raw(kind, self.id, payload).await;
         self.ensure_active()?;
         result
     }
+}
+
+impl DeviceStream {
+    pub(super) fn id(&self) -> u32 {
+        self.send.id
+    }
+
+    pub(super) fn sender(&self) -> DeviceStreamSender {
+        self.send.clone()
+    }
+
+    pub(super) fn uses_flow_control(&self) -> bool {
+        self.send
+            .flow
+            .as_ref()
+            .is_some_and(|flow| flow.kind == FlowKind::File)
+    }
+
+    pub(super) async fn grant_window(&self, bytes: usize) -> Result<()> {
+        if !self.uses_flow_control() || bytes == 0 {
+            return Ok(());
+        }
+        let bytes = u32::try_from(bytes).context("stream window update exceeds u32")?;
+        self.send(&FlowKind::File.window_update(self.id(), bytes)?)
+            .await
+    }
+
+    pub(super) async fn send(&self, frame: &Frame) -> Result<()> {
+        self.send.send(frame).await
+    }
+
+    pub(super) async fn send_raw(&self, kind: FrameKind, payload: &[u8]) -> Result<()> {
+        self.send.send_raw(kind, payload).await
+    }
 
     pub(super) fn try_recv(&mut self) -> Result<Option<Frame>> {
-        if let Some(reason) = self.cancel_reason() {
+        if let Some(reason) = self.send.cancel_reason() {
             self.completed = true;
             bail!(reason);
         }
@@ -505,7 +502,7 @@ impl DeviceStream {
             }
             Err(mpsc::error::TryRecvError::Empty) => Ok(None),
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                if let Some(reason) = self.cancel_reason() {
+                if let Some(reason) = self.send.cancel_reason() {
                     self.completed = true;
                     bail!(reason);
                 }
@@ -515,15 +512,15 @@ impl DeviceStream {
     }
 
     pub(super) async fn recv(&mut self) -> Result<Frame> {
-        if let Some(reason) = self.cancel_reason() {
+        if let Some(reason) = self.send.cancel_reason() {
             self.completed = true;
             bail!(reason);
         }
         let frame = tokio::select! {
             biased;
-            changed = self.cancel.changed() => {
+            changed = self.send.cancel.changed() => {
                 if changed.is_ok()
-                    && let Some(reason) = self.cancel_reason()
+                    && let Some(reason) = self.send.cancel_reason()
                 {
                     self.completed = true;
                     bail!(reason);
@@ -540,12 +537,12 @@ impl DeviceStream {
 
 impl Drop for DeviceStream {
     fn drop(&mut self) {
-        let id = self.id;
-        self.transport.inner.routes.lock().unwrap().remove(&id);
+        let id = self.id();
+        self.send.transport.inner.routes.lock().unwrap().remove(&id);
         if !self.completed
             && let Ok(handle) = tokio::runtime::Handle::try_current()
         {
-            let inner = self.transport.inner.clone();
+            let inner = self.send.transport.inner.clone();
             handle.spawn(async move {
                 send_stream_cancel(
                     inner,

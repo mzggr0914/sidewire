@@ -1,10 +1,10 @@
 use super::*;
-use crate::transport::DeviceTransport;
+use crate::transport::{DeviceStream, DeviceTransport};
 use sidewire_protocol::{
-    DeviceId, SecureFrameReader, SecureFrameWriter, SecurityBanner, SecurityClientHello,
-    SecurityDecision, SecurityMode, SharedNoise, negotiated_version, noise_initiator,
-    noise_responder, protocol_compatible, protocol_label, read_packet, security_prologue,
-    write_packet,
+    DeviceId, FlowKind, PTY_FRAME_BYTES, PTY_WINDOW_REFILL, SecureFrameReader, SecureFrameWriter,
+    SecurityBanner, SecurityClientHello, SecurityDecision, SecurityMode, SharedNoise,
+    negotiated_version, noise_initiator, noise_responder, protocol_compatible, protocol_label,
+    read_packet, security_prologue, write_packet,
 };
 use std::collections::HashSet;
 
@@ -943,7 +943,7 @@ where
             return Ok(());
         }
     };
-    let mut device_stream = session.transport.open_stream().await?;
+    let mut device_stream = session.transport.open_pty_stream()?;
     let stream_id = device_stream.id();
     let request = PtyOpenRequest {
         program,
@@ -980,18 +980,31 @@ where
         kind => bail!("unexpected PTY open response {kind:?}"),
     }
 
-    let transport = session.transport.clone();
+    relay_control_pty(reader, device_stream).await
+}
+
+async fn relay_control_pty<S>(reader: BufReader<S>, mut device_stream: DeviceStream) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let stream_id = device_stream.id();
+    let sender = device_stream.sender();
+    let flow_control = sender.uses_pty_flow_control();
     let (mut local_read, mut local_write) = tokio::io::split(reader);
     let local_to_device = async {
         loop {
             match read_frame(&mut local_read).await {
-                Ok(mut local) => match local.kind {
+                Ok(local) => match local.kind {
+                    FrameKind::PtyInput if flow_control => {
+                        for input in local.payload.chunks(PTY_FRAME_BYTES) {
+                            sender.send_raw(FrameKind::PtyInput, input).await?;
+                        }
+                    }
                     FrameKind::PtyInput
                     | FrameKind::PtyResize
                     | FrameKind::PtyClose
                     | FrameKind::PtyComplete => {
-                        local.stream_id = stream_id;
-                        transport.send_frame(&local).await?;
+                        sender.send_raw(local.kind, &local.payload).await?;
                         if local.kind == FrameKind::PtyClose {
                             return Ok::<(), anyhow::Error>(());
                         }
@@ -999,27 +1012,47 @@ where
                     kind => bail!("unexpected local PTY frame {kind:?}"),
                 },
                 Err(_) => {
-                    let _ = transport
-                        .send_raw(FrameKind::PtyClose, stream_id, &[])
-                        .await;
+                    let _ = sender.send_raw(FrameKind::PtyClose, &[]).await;
                     return Ok::<(), anyhow::Error>(());
                 }
             }
         }
     };
     let device_to_local = async {
-        let mut local_alive = true;
+        let mut consumed = 0;
         loop {
-            let remote = device_stream.recv().await?;
+            let remote = match device_stream.recv().await {
+                Ok(remote) => remote,
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = write_raw_frame(
+                        &mut local_write,
+                        FrameKind::Error,
+                        stream_id,
+                        message.as_bytes(),
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
             if remote.stream_id != stream_id {
                 bail!("unexpected remote stream {} during PTY", remote.stream_id);
             }
-            let done = matches!(remote.kind, FrameKind::PtyExit | FrameKind::Error);
-            if local_alive && write_frame(&mut local_write, &remote).await.is_err() {
-                local_alive = false;
-            }
-            if done {
+            let credited =
+                flow_control && FlowKind::Pty.frame_cost(remote.kind, remote.payload.len())? != 0;
+            if write_frame(&mut local_write, &remote).await.is_err() {
+                let _ = sender.send_raw(FrameKind::PtyClose, &[]).await;
                 return Ok::<(), anyhow::Error>(());
+            }
+            if matches!(remote.kind, FrameKind::PtyExit | FrameKind::Error) {
+                return Ok::<(), anyhow::Error>(());
+            }
+            if credited {
+                consumed += 1;
+                if consumed == PTY_WINDOW_REFILL {
+                    sender.grant_pty_window(consumed).await?;
+                    consumed = 0;
+                }
             }
         }
     };
@@ -1682,4 +1715,99 @@ async fn start_reverse(
     };
     remote_start_proxy(session, request).await?;
     Ok(format!("device tcp:{device_port} -> host tcp:{host_port}"))
+}
+
+#[cfg(test)]
+mod pty_tests {
+    use super::*;
+    use sidewire_protocol::{PTY_WINDOW_FRAMES, VERSION, capabilities};
+    use tokio::time::{Duration, timeout};
+
+    #[tokio::test]
+    async fn long_pty_input_waits_for_credit_without_stalling_output_or_other_streams() {
+        timeout(Duration::from_secs(5), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let (client, accepted) = tokio::join!(
+                TcpStream::connect(listener.local_addr().unwrap()),
+                listener.accept(),
+            );
+            let transport = DeviceTransport::new(client.unwrap(), None, VERSION, capabilities::ALL);
+            let stream = transport.open_pty_stream().unwrap();
+            let id = stream.id();
+            let (peer_read, peer_write) = accepted.unwrap().0.into_split();
+            let mut peer_read = SecureFrameReader::new(peer_read, None);
+            let mut peer_write = SecureFrameWriter::new(peer_write, None);
+            let (local, relay) = tokio::io::duplex(64);
+            let relay = tokio::spawn(relay_control_pty(BufReader::new(relay), stream));
+            let (mut local_read, mut local_write) = tokio::io::split(local);
+            let pasted = "한🙂\r\n".repeat(14_000).into_bytes();
+            let input = pasted.clone();
+            let paste = tokio::spawn(async move {
+                write_raw_frame(&mut local_write, FrameKind::PtyInput, id, &input)
+                    .await
+                    .unwrap();
+                local_write
+            });
+
+            for (index, chunk) in pasted.chunks(PTY_FRAME_BYTES).enumerate() {
+                if index == PTY_WINDOW_FRAMES {
+                    assert!(
+                        timeout(Duration::from_millis(30), peer_read.read_frame())
+                            .await
+                            .is_err()
+                    );
+                    let mut other = transport.open_stream().await.unwrap();
+                    other.send_raw(FrameKind::Ping, b"ping").await.unwrap();
+                    let ping = peer_read.read_frame().await.unwrap();
+                    assert_eq!(ping.kind, FrameKind::Ping);
+                    peer_write
+                        .write_raw(FrameKind::Pong, ping.stream_id, &ping.payload)
+                        .await
+                        .unwrap();
+                    assert_eq!(other.recv().await.unwrap().payload, b"ping");
+
+                    for _ in 0..PTY_WINDOW_REFILL {
+                        peer_write
+                            .write_raw(FrameKind::PtyOutput, id, b"echo")
+                            .await
+                            .unwrap();
+                    }
+                    for _ in 0..PTY_WINDOW_REFILL {
+                        assert_eq!(read_frame(&mut local_read).await.unwrap().payload, b"echo");
+                    }
+                    let update = peer_read.read_frame().await.unwrap();
+                    assert_eq!(
+                        FlowKind::decode_window_update(&update).unwrap(),
+                        (FlowKind::Pty, PTY_WINDOW_REFILL)
+                    );
+                }
+                if index != 0 && index % PTY_WINDOW_FRAMES == 0 {
+                    peer_write
+                        .write_frame(
+                            &FlowKind::Pty
+                                .window_update(id, PTY_WINDOW_FRAMES as u32)
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                }
+                let frame = peer_read.read_frame().await.unwrap();
+                assert_eq!(frame.kind, FrameKind::PtyInput);
+                assert_eq!(frame.payload, chunk);
+            }
+
+            let _local_write = paste.await.unwrap();
+            peer_write
+                .write_frame(&frame(FrameKind::PtyExit, id, &PtyExit { code: Some(0) }).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                read_frame(&mut local_read).await.unwrap().kind,
+                FrameKind::PtyExit
+            );
+            relay.await.unwrap().unwrap();
+        })
+        .await
+        .unwrap();
+    }
 }

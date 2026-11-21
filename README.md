@@ -62,6 +62,7 @@ sidewire exec --as root id
 Interactive shells use the Android shell's line editing, history, and Tab completion.
 On Windows, this also keeps pasted input and shell prompts in the same output stream.
 The `--raw` option remains available for compatibility and uses the same interactive mode.
+Protocol 1.3 peers apply flow control to shell input and output during large pastes.
 
 ## Android clipboard
 
@@ -139,7 +140,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The wire protocol is currently `1.2` with capability negotiation for optional features.
+The wire protocol is currently `1.3` with capability negotiation for optional features.
 
 ## License
 
