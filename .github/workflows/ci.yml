@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, codex/windows-pty]
   pull_request:
 
 permissions:
@@ -92,6 +92,12 @@ jobs:
       - run: cargo clippy -p sidewire -p sidewire-protocol --all-targets -- -D warnings
       - run: cargo test -p sidewire -p sidewire-protocol
       - run: cargo build --release -p sidewire
+      - uses: actions/upload-artifact@v7.0.2
+        if: github.ref == 'refs/heads/codex/windows-pty'
+        with:
+          name: sidewire-windows-x86_64
+          if-no-files-found: error
+          path: target/release/sidewire.exe
 
   linux:
     name: Linux x86_64
