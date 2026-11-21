@@ -1249,6 +1249,23 @@ async fn handle_push(
     Ok(())
 }
 
+async fn read_pull_chunk(
+    reader: &mut (impl tokio::io::AsyncRead + Unpin),
+    buffer: &mut [u8],
+) -> std::io::Result<usize> {
+    // Flow credit counts bytes, but the receiver's queue counts frames.
+    // Fill each chunk (except at EOF) so short pipe reads cannot exhaust that queue.
+    let mut filled = 0;
+    while filled < buffer.len() {
+        let read = reader.read(&mut buffer[filled..]).await?;
+        if read == 0 {
+            break;
+        }
+        filled += read;
+    }
+    Ok(filled)
+}
+
 async fn handle_pull(
     writer: &MuxWriter,
     stream_id: u32,
@@ -1268,13 +1285,8 @@ async fn handle_pull(
         loop {
             let read = tokio::select! {
                 biased;
-                changed = cancel.changed() => {
-                    if changed.is_ok() && *cancel.borrow() {
-                        bail!("stream {stream_id} canceled");
-                    }
-                    continue;
-                }
-                read = file.read(&mut buffer) => read?,
+                _ = wait_for_stream_cancel(&mut cancel) => bail!("stream {stream_id} canceled"),
+                read = read_pull_chunk(&mut file, &mut buffer) => read?,
             };
             if read == 0 {
                 break;
@@ -1313,15 +1325,12 @@ async fn handle_pull(
     loop {
         let read = tokio::select! {
             biased;
-            changed = cancel.changed() => {
-                if changed.is_ok() && *cancel.borrow() {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                    bail!("stream {stream_id} canceled");
-                }
-                continue;
+            _ = wait_for_stream_cancel(&mut cancel) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                bail!("stream {stream_id} canceled");
             }
-            read = stdout.read(&mut buffer) => read?,
+            read = read_pull_chunk(&mut stdout, &mut buffer) => read?,
         };
         if read == 0 {
             break;
@@ -1785,7 +1794,33 @@ async fn start_proxy(
 
 #[cfg(test)]
 mod tests {
-    use super::{next_outbound_delay, sanitize_shell_hostname, shell_quote};
+    use super::{
+        FILE_BUFFER_SIZE, next_outbound_delay, read_pull_chunk, sanitize_shell_hostname,
+        shell_quote,
+    };
+    use tokio::io::{AsyncWriteExt, duplex};
+
+    #[tokio::test]
+    async fn pull_coalesces_pipe_reads_and_preserves_the_final_short_chunk() {
+        // The pipe holds at most 8 KiB, so one underlying read cannot fill a file chunk.
+        let (mut output, mut input) = duplex(8 * 1024);
+        let payload: Vec<_> = (0..FILE_BUFFER_SIZE * 4 + 17)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let send = async {
+            output.write_all(&payload).await.unwrap();
+            output.shutdown().await.unwrap();
+        };
+        let receive = async {
+            let mut buffer = vec![0; FILE_BUFFER_SIZE];
+            for expected in payload.chunks(FILE_BUFFER_SIZE) {
+                let read = read_pull_chunk(&mut input, &mut buffer).await.unwrap();
+                assert_eq!(&buffer[..read], expected);
+            }
+            assert_eq!(read_pull_chunk(&mut input, &mut buffer).await.unwrap(), 0);
+        };
+        tokio::join!(send, receive);
+    }
 
     #[test]
     fn outbound_backoff_grows_and_pairing_grace_forces_fast_retry() {

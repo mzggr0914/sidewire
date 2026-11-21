@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix file pulls being canceled when short Android pipe reads fill the receive queue
 - remove `clipboard push` and `clipboard pull` and drop the desktop clipboard dependency; use `clipboard set` and `clipboard get` to write and read Android clipboard text
 - add Dependabot update pull requests and a weekly pnpm security audit
 - leave the WebUI's PC host field blank when no address has been saved
