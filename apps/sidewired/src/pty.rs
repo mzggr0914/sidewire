@@ -6,8 +6,8 @@ use shell::ShellBridge;
 #[cfg(target_os = "android")]
 use sidewire_protocol::PtyCompleteRequest;
 use sidewire_protocol::{
-    FlowKind, Frame, FrameKind, PTY_FRAME_BYTES, PTY_WINDOW_REFILL, PtyExit, PtyOpenAck,
-    PtyOpenRequest, PtyResize, decode, frame,
+    FlowKind, Frame, FrameKind, PTY_WINDOW_REFILL, PtyExit, PtyOpenAck, PtyOpenRequest, PtyResize,
+    decode, frame,
 };
 use std::{
     ffi::{CStr, CString},
@@ -299,7 +299,9 @@ pub(super) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sidewire_protocol::{ExecIdentity, PTY_WINDOW_FRAMES, SecureFrameReader, raw_frame};
+    use sidewire_protocol::{
+        ExecIdentity, PTY_FRAME_BYTES, PTY_WINDOW_FRAMES, SecureFrameReader, raw_frame,
+    };
     use tokio::{
         net::{TcpListener, TcpStream},
         time::{Duration, timeout},
