@@ -240,9 +240,15 @@ pub(super) async fn run(
                 let credited = flow_control
                     && FlowKind::Pty.frame_cost(incoming.kind, incoming.payload.len())? != 0;
                 match incoming.kind {
-                    FrameKind::PtyInput => {
+                    FrameKind::PtyInput | FrameKind::ShellPaste => {
                         if let Some(shell) = &mut bridge {
-                            shell.raw(&master, &incoming.payload).await?;
+                            shell
+                                .raw(
+                                    &master,
+                                    &incoming.payload,
+                                    incoming.kind == FrameKind::ShellPaste,
+                                )
+                                .await?;
                         } else {
                             write_input(&master, &incoming.payload)
                                 .await

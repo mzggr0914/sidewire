@@ -27,7 +27,13 @@ impl FlowKind {
     pub fn frame_cost(self, kind: FrameKind, len: usize) -> Result<usize> {
         match (self, kind) {
             (Self::File, FrameKind::FileChunk) => Ok(len),
-            (Self::Pty, FrameKind::PtyInput | FrameKind::PtyOutput | FrameKind::ShellLine) => {
+            (
+                Self::Pty,
+                FrameKind::PtyInput
+                | FrameKind::PtyOutput
+                | FrameKind::ShellLine
+                | FrameKind::ShellPaste,
+            ) => {
                 if len > PTY_FRAME_BYTES {
                     bail!("PTY data frame exceeds {PTY_FRAME_BYTES} bytes");
                 }

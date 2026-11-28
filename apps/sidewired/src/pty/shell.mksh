@@ -35,7 +35,7 @@ function __sw_read {
     # The internal read is one shell command. Hide its prompt and restore
     # the real PS1 before the user's command is parsed at top level.
     __sw_saved_ps1=$PS1
-    PS1='${| PS1=$__sw_saved_ps1; REPLY=; }'
+    PS1='${| typeset __sw_rc=$?; PS1=$__sw_saved_ps1; REPLY=; return "$__sw_rc"; }'
     return "$previous"
 }
-PS1=$PS1'${| __sw_gate 9<>"$__sw_tty"; REPLY=; }'
+PS1=$PS1'${| typeset __sw_rc=$?; __sw_gate 9<>"$__sw_tty"; REPLY=; return "$__sw_rc"; }'

@@ -13,7 +13,8 @@ use tokio::io::{Interest, unix::AsyncFd};
 // mksh closes extra descriptors across exec, so its ENV file is created by the
 // selected identity and unlinked immediately upon sourcing. Root uses private KSU storage.
 const START: &str = r#"if [ -z "$KSH_VERSION" ] || [ ! -r "$2" ] || [ ! -w "$2" ]; then exec /system/bin/sh -i; fi
-case $(/system/bin/id -u) in 0) dir=/data/adb;; *) dir=/data/local/tmp;; esac
+case $(/system/bin/id -u) in 0) dir=/data/adb;; 2000) dir=/data/local/tmp;; *) exec /system/bin/sh -i;; esac
+if [ -z "$TMPDIR" ] || [ ! -d "$TMPDIR" ] || [ ! -w "$TMPDIR" ]; then export TMPDIR="$dir"; fi
 init=$(/system/bin/mktemp "$dir/.sidewire-shell.XXXXXXXX") || exec /system/bin/sh -i
 if ! printf '%s\n' "$1" >"$init"; then /system/bin/rm -f "$init"; exec /system/bin/sh -i; fi
 export SIDEWIRE_SAVED_ENV="$ENV" SIDEWIRE_PROMPT_TTY="$2" ENV="$init"
@@ -29,6 +30,8 @@ pub(super) struct ShellBridge {
     awaiting_line: bool,
     line_started: bool,
     partial_input: bool,
+    paste_column: usize,
+    shell_group: libc::pid_t,
 }
 
 fn open_slave(name: &CStr) -> io::Result<File> {
@@ -133,6 +136,8 @@ impl ShellBridge {
                 awaiting_line: false,
                 line_started: false,
                 partial_input: false,
+                paste_column: 0,
+                shell_group: -1,
             },
             args,
         ))
@@ -153,6 +158,7 @@ impl ShellBridge {
     pub(super) async fn on_signal(&mut self, master: &AsyncFd<File>, signal: u8) -> Result<bool> {
         match signal {
             b'P' => {
+                self.shell_group = unsafe { libc::tcgetpgrp(master.as_raw_fd()) };
                 let slave = open_slave(&self.main_slave)?;
                 let flags = termios(&slave)?.c_lflag;
                 self.driver_at = None;
@@ -175,7 +181,12 @@ impl ShellBridge {
         Ok(false)
     }
 
-    pub(super) async fn raw(&mut self, master: &AsyncFd<File>, data: &[u8]) -> Result<()> {
+    pub(super) async fn raw(
+        &mut self,
+        master: &AsyncFd<File>,
+        data: &[u8],
+        paste: bool,
+    ) -> Result<()> {
         self.received = self.received.wrapping_add(data.len() as u64);
         if self.awaiting_line {
             self.awaiting_line = false;
@@ -195,7 +206,43 @@ impl ShellBridge {
             let canonical = termios(master.get_ref())?.c_lflag & libc::ICANON != 0;
             self.partial_input = canonical && !matches!(last, b'\n' | b'\r' | 3 | 4);
         }
-        write_input(master, data).await?;
+        let attrs = termios(master.get_ref())?;
+        let canonical_paste = paste
+            && self.shell_group > 0
+            && attrs.c_lflag & libc::ICANON != 0
+            && attrs.c_cc[libc::VEOF] != 0
+            && unsafe { libc::tcgetpgrp(master.as_raw_fd()) } == self.shell_group;
+        let expanded;
+        let mut remaining = if canonical_paste {
+            expanded = canonical_paste_bytes(data, &mut self.paste_column, attrs.c_cc[libc::VEOF]);
+            expanded.as_slice()
+        } else {
+            self.paste_column = 0;
+            data
+        };
+        while !remaining.is_empty() {
+            // A paste can fill the kernel's input buffer *while mksh waits at
+            // its next prompt*. Service that gate without admitting a local
+            // editor or restarting a partially completed PTY write.
+            tokio::select! {
+                signal = self.signal() => {
+                    self.driver_at = None;
+                    match signal? {
+                        b'P' => write_input(&self.control, b"\n").await?,
+                        b'R' => write_input(&self.control, b"F\n").await?,
+                        _ => bail!("invalid shell prompt gate during input"),
+                    }
+                }
+                result = master.async_io(Interest::WRITABLE, |mut file| std::io::Write::write(&mut file, remaining)) => {
+                    match result {
+                        Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                        Ok(written) => remaining = &remaining[written..],
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -204,6 +251,7 @@ impl ShellBridge {
             bail!("unexpected shell command fragment");
         }
         self.received = self.received.wrapping_add(bytes.len() as u64);
+        self.paste_column = 0;
         if !self.line_started {
             let slave = open_slave(&self.main_slave)?;
             // A complete canonical line fits in 4096 bytes including LF. Send ordinary
@@ -229,5 +277,53 @@ impl ShellBridge {
             self.line_started = false;
         }
         Ok(())
+    }
+}
+
+// Linux N_TTY retains 4095 bytes per canonical record. VEOF after a nonempty
+// prefix releases those bytes to mksh without inserting a byte or a newline.
+// Only apply this to clipboard text entered at our prompt. Full-screen
+// programs and other foreground process groups receive their original bytes.
+fn canonical_paste_bytes(data: &[u8], column: &mut usize, eof: u8) -> Vec<u8> {
+    let mut input = Vec::with_capacity(data.len() + 2);
+    for &byte in data {
+        if matches!(byte, b'\r' | b'\n' | 3 | 4 | 8 | 21 | 127) || byte == eof {
+            *column = 0;
+        } else {
+            if *column >= 3072 && byte & 0xc0 != 0x80 {
+                input.push(eof);
+                *column = 0;
+            }
+            *column += 1;
+        }
+        input.push(byte);
+    }
+    input
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paste_chunk_boundaries_preserve_unicode_and_newlines() {
+        let original = format!("{}\r\r{}", "가🙂".repeat(2000), "x".repeat(3072));
+        let mut column = 0;
+        let encoded: Vec<_> = original
+            .as_bytes()
+            .chunks(177)
+            .flat_map(|s| canonical_paste_bytes(s, &mut column, 4))
+            .collect();
+        assert!(encoded.contains(&4));
+        assert!(
+            encoded
+                .split(|&b| b == 4)
+                .all(|s| std::str::from_utf8(s).is_ok())
+        );
+        assert_eq!(
+            encoded.into_iter().filter(|&b| b != 4).collect::<Vec<_>>(),
+            original.as_bytes()
+        );
+        assert_eq!(column, 3072);
     }
 }

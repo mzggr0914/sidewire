@@ -1010,7 +1010,9 @@ where
         loop {
             match read_frame(&mut local_read).await {
                 Ok(local) => match local.kind {
-                    FrameKind::PtyInput | FrameKind::ShellLine if flow_control => {
+                    FrameKind::PtyInput | FrameKind::ShellLine | FrameKind::ShellPaste
+                        if flow_control =>
+                    {
                         for input in local.payload.chunks(PTY_FRAME_BYTES) {
                             sender.send_raw(local.kind, input).await?;
                         }

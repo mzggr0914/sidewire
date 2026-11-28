@@ -188,7 +188,11 @@ impl Terminal {
         self.leave(out)?;
         out.write_chunk(b"\r\n")?;
         let text = std::mem::take(&mut self.line.text);
-        if !text.is_empty() && !text.starts_with(' ') && self.history.back() != Some(&text) {
+        if !text.is_empty()
+            && text.len() <= 64 * 1024
+            && !text.starts_with(' ')
+            && self.history.back() != Some(&text)
+        {
             if self.history.len() == 128 {
                 self.history.pop_front();
             }
@@ -278,7 +282,7 @@ impl Terminal {
                 raw.extend_from_slice(&text.as_bytes()[offset..]);
             }
         }
-        self.data(queue, FrameKind::PtyInput, raw);
+        self.data(queue, FrameKind::ShellPaste, raw);
         Ok(())
     }
 
@@ -475,7 +479,10 @@ pub(super) async fn run(control: &str, device: Option<String>, run_as: RunAs) ->
     let (tx, mut writes) = tokio::sync::mpsc::channel::<Frame>(PTY_WINDOW_FRAMES);
     let writing = async {
         while let Some(f) = writes.recv().await {
-            if matches!(f.kind, FrameKind::ShellLine | FrameKind::PtyInput) {
+            if matches!(
+                f.kind,
+                FrameKind::ShellLine | FrameKind::PtyInput | FrameKind::ShellPaste
+            ) {
                 for chunk in f.payload.chunks(PTY_FRAME_BYTES) {
                     write_raw_frame(&mut writer, f.kind, ID, chunk).await?;
                 }
@@ -491,22 +498,38 @@ pub(super) async fn run(control: &str, device: Option<String>, run_as: RunAs) ->
         let mut queue = VecDeque::new();
         loop {
             tokio::select! {
-                slot=tx.reserve(), if !queue.is_empty()=>slot?.send(queue.pop_front().unwrap()),
-                event=events.recv(), if queue.len()<PTY_WINDOW_FRAMES=>match event.context("console reader stopped")? {
-                    ConsoleEvent::Input(data)=>terminal.input(&data,&mut out,&mut queue)?,
-                    ConsoleEvent::Resize{cols,rows}=>{terminal.columns=cols.max(2);if terminal.editing {terminal.redraw(&mut out)?;} queue.push_back(frame(FrameKind::PtyResize,ID,&PtyResize{cols,rows})?);}
-                    ConsoleEvent::Error(e)=>bail!(e),
-                    ConsoleEvent::Eof=>return Ok(()),
-                    ConsoleEvent::Complete{reply,..}=>{let _=reply.send(None);}
-                },
-                remote=remote_rx.recv()=>{let f=remote.context("PTY network reader stopped")??;
-                    match f.kind {
-                        FrameKind::PtyOutput=>terminal.output(&mut out,&f.payload)?,
-                        FrameKind::ShellPrompt=>terminal.ready(&mut out,u64::from_be_bytes(f.payload.as_slice().try_into().context("invalid shell input position")?))?,
-                        FrameKind::PtyCompleteResult=>terminal.completed(&mut out,decode(&f.payload)?)?,
-                        FrameKind::PtyExit=>{let exit:PtyExit=decode(&f.payload)?; if exit.code.unwrap_or(0)!=0 {bail!("remote PTY exited (code {:?})",exit.code)} return Ok(());}
-                        FrameKind::Error=>bail!("remote PTY error: {}",String::from_utf8_lossy(&f.payload)),
-                        kind=>bail!("unexpected PTY frame {kind:?}"),
+                slot = tx.reserve(), if !queue.is_empty() => {
+                    slot?.send(queue.pop_front().expect("nonempty write queue"));
+                }
+                event = events.recv(), if queue.len() < PTY_WINDOW_FRAMES => {
+                    match event.context("console reader stopped")? {
+                        ConsoleEvent::Input(data) => terminal.input(&data, &mut out, &mut queue)?,
+                        ConsoleEvent::Resize { cols, rows } => {
+                            terminal.columns = cols.max(2);
+                            if terminal.editing { terminal.redraw(&mut out)?; }
+                            queue.push_back(frame(FrameKind::PtyResize, ID, &PtyResize { cols, rows })?);
+                        }
+                        ConsoleEvent::Error(message) => bail!(message),
+                        ConsoleEvent::Eof => return Ok(()),
+                        ConsoleEvent::Complete { reply, .. } => { let _ = reply.send(None); }
+                    }
+                }
+                remote = remote_rx.recv() => {
+                    let remote = remote.context("PTY network reader stopped")??;
+                    match remote.kind {
+                        FrameKind::PtyOutput => terminal.output(&mut out, &remote.payload)?,
+                        FrameKind::ShellPrompt => {
+                            let position = remote.payload.as_slice().try_into().context("invalid shell input position")?;
+                            terminal.ready(&mut out, u64::from_be_bytes(position))?;
+                        }
+                        FrameKind::PtyCompleteResult => terminal.completed(&mut out, decode(&remote.payload)?)?,
+                        FrameKind::PtyExit => {
+                            let exit: PtyExit = decode(&remote.payload)?;
+                            if exit.code.unwrap_or(0) != 0 { bail!("remote PTY exited (code {:?})", exit.code); }
+                            return Ok(());
+                        }
+                        FrameKind::Error => bail!("remote PTY error: {}", String::from_utf8_lossy(&remote.payload)),
+                        kind => bail!("unexpected PTY frame {kind:?}"),
                     }
                 }
             }
@@ -527,6 +550,39 @@ pub(super) async fn run(control: &str, device: Option<String>, run_as: RunAs) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_prompt_cannot_echo_program_input() {
+        let mut term = Terminal {
+            sent: 1,
+            ..Terminal::default()
+        };
+        let mut out = StreamOutput::stdout();
+        term.ready(&mut out, 0).unwrap();
+        assert!(!term.editing);
+        let mut frames = VecDeque::new();
+        term.input(b"dummy-password\r", &mut out, &mut frames)
+            .unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].kind, FrameKind::PtyInput);
+        assert_eq!(frames[0].payload, b"dummy-password\r");
+    }
+
+    #[test]
+    fn paste_normalizes_split_crlf_without_submitting_the_last_partial_line() {
+        let mut term = Terminal {
+            paste: true,
+            ..Terminal::default()
+        };
+        let mut out = StreamOutput::stdout();
+        let mut frames = VecDeque::new();
+        for chunk in ["한\r", "\n🙂\n\nlast\x1b[", "201~"] {
+            term.input(chunk.as_bytes(), &mut out, &mut frames).unwrap();
+        }
+        assert!(!term.paste);
+        let bytes: Vec<_> = frames.into_iter().flat_map(|frame| frame.payload).collect();
+        assert_eq!(bytes, "한\r🙂\r\rlast".as_bytes());
+    }
 
     #[test]
     fn deletes_complete_graphemes() {

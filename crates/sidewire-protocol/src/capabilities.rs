@@ -63,6 +63,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shell_editing_needs_a_compatible_peer_and_pty_flow_control() {
+        assert!(supports_interactive_shell(crate::VERSION, ALL));
+        assert!(!supports_interactive_shell(0x103, ALL));
+        assert!(!supports_interactive_shell(
+            crate::VERSION,
+            ALL & !INTERACTIVE_SHELL
+        ));
+        assert!(!supports_interactive_shell(
+            crate::VERSION,
+            ALL & !PTY_FLOW_CONTROL
+        ));
+    }
+
+    #[test]
     fn pty_flow_control_requires_the_capability_and_protocol_1_3() {
         let legacy = (u16::from(crate::PROTOCOL_MAJOR) << 8) | 2;
         assert!(!supports_pty_flow_control(legacy, ALL));
