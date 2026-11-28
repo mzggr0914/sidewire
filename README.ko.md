@@ -135,7 +135,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-현재 wire protocol은 `1.3`이며 선택 기능은 capability negotiation으로 협상합니다.
+현재 wire protocol은 `1.4`이며 선택 기능은 capability negotiation으로 협상합니다.
 
 ## 라이선스
 

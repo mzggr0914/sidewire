@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- edit the Windows command line locally at Android shell prompts and keep active network shells responsive with a session-scoped wake lock and device activity frames
+
 - preserve Windows Terminal paste input and apply bidirectional PTY flow control to keep shells open under load
 - use nonblocking Android PTY I/O for interactive input and output
 - fix file pulls being canceled when short Android pipe reads fill the receive queue

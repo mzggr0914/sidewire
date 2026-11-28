@@ -137,7 +137,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The wire protocol is currently `1.3` with capability negotiation for optional features.
+The wire protocol is currently `1.4` with capability negotiation for optional features.
 
 ## License
 

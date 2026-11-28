@@ -126,7 +126,7 @@ enum Command {
         device: Option<String>,
         #[arg(long = "as", value_enum)]
         run_as: Option<RunAs>,
-        /// Use raw console input (the default for interactive terminals).
+        /// Use Android's native terminal editor and echo for the entire session.
         #[arg(long)]
         raw: bool,
         /// Send a synthetic command sequence to verify the PTY path.
