@@ -235,7 +235,7 @@ impl ShellBridge {
                 }
                 result = master.async_io(Interest::WRITABLE, |mut file| std::io::Write::write(&mut file, remaining)) => {
                     match result {
-                        Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                        Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero).into()),
                         Ok(written) => remaining = &remaining[written..],
                         Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                         Err(error) => return Err(error.into()),
