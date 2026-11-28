@@ -32,6 +32,8 @@ pub(super) struct MuxWriter {
     supports_stream_cancel: bool,
     supports_flow_control: bool,
     supports_pty_flow_control: bool,
+    #[cfg(target_os = "android")]
+    shell_activity: Option<Arc<StdMutex<std::sync::Weak<crate::shell_activity::ShellActivity>>>>,
 }
 
 impl MuxWriter {
@@ -98,6 +100,8 @@ impl MuxWriter {
             supports_stream_cancel,
             supports_flow_control,
             supports_pty_flow_control,
+            #[cfg(target_os = "android")]
+            shell_activity: None,
         }
     }
 
@@ -132,6 +136,19 @@ impl MuxWriter {
             }
             notified.await;
         }
+    }
+
+    #[cfg(target_os = "android")]
+    pub(super) fn with_shell_activity(mut self, enabled: bool) -> Self {
+        self.shell_activity = enabled.then(Default::default);
+        self
+    }
+
+    #[cfg(target_os = "android")]
+    pub(super) fn shell_lease(&self) -> Option<Arc<crate::shell_activity::ShellActivity>> {
+        self.shell_activity
+            .as_ref()
+            .map(|lease| crate::shell_activity::ShellActivity::acquire(lease, self.clone()))
     }
 
     pub(super) fn supports_flow(&self, kind: FlowKind) -> bool {
@@ -176,7 +193,9 @@ impl MuxWriter {
     async fn acquire_flow_credit(&self, stream_id: u32, kind: FrameKind, len: usize) -> Result<()> {
         let flow_kind = match kind {
             FrameKind::FileChunk => FlowKind::File,
-            FrameKind::PtyOutput | FrameKind::PtyCompleteResult => FlowKind::Pty,
+            FrameKind::PtyOutput | FrameKind::PtyCompleteResult | FrameKind::ShellPrompt => {
+                FlowKind::Pty
+            }
             _ => return Ok(()),
         };
         if !self.supports_flow(flow_kind) {

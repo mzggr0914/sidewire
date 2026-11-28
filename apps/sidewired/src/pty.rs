@@ -1,5 +1,7 @@
+mod shell;
 use crate::{command_for_identity, transport::MuxWriter, wait_for_stream_cancel};
 use anyhow::{Context, Result, bail};
+use shell::ShellBridge;
 #[cfg(target_os = "android")]
 use sidewire_protocol::PtyCompleteRequest;
 use sidewire_protocol::{
@@ -127,9 +129,23 @@ pub(super) async fn run(
     inbox: &mut mpsc::Receiver<Frame>,
     mut cancel: watch::Receiver<bool>,
     hostname: &str,
+    local_edit: bool,
 ) -> Result<()> {
     let (master, slave_name) = open_master(request.cols, request.rows)?;
-    let mut command = command_for_identity(&request.program, &request.args, request.identity);
+    let interactive =
+        request.program == "/system/bin/sh" && request.args.is_empty() && request.echo;
+    let (mut bridge, args) = if local_edit && interactive {
+        match ShellBridge::open(&slave_name, request.identity) {
+            Ok((bridge, args)) => (Some(bridge), args),
+            Err(error) => {
+                tracing::warn!(%error, "using native PTY editing");
+                (None, request.args)
+            }
+        }
+    } else {
+        (None, request.args)
+    };
+    let mut command = command_for_identity(&request.program, &args, request.identity);
     command
         .env("TERM", &request.term)
         .env("COLORTERM", "truecolor")
@@ -144,6 +160,9 @@ pub(super) async fn run(
         .spawn()
         .with_context(|| format!("spawn PTY program {}", request.program))?;
     let pid = child.id().unwrap_or(0);
+    #[cfg(target_os = "android")]
+    let _activity = interactive.then(|| writer.shell_lease()).flatten();
+    let (prompt_tx, mut prompts) = mpsc::channel::<u64>(1);
     let flow_control = writer.supports_flow(FlowKind::Pty);
 
     let session = async {
@@ -157,9 +176,26 @@ pub(super) async fn run(
         let output_loop = async {
             let mut buffer = [0u8; PTY_FRAME_BYTES];
             loop {
-                let read = master
-                    .async_io(Interest::READABLE, |mut file| file.read(&mut buffer))
-                    .await;
+                let read = tokio::select! {
+                    biased;
+                    Some(position) = prompts.recv() => {
+                        // The shell wrote its real prompt before it requested local input.
+                        // Finish already queued terminal output before publishing that event.
+                        loop {
+                            let n = match master.get_ref().read(&mut buffer) {
+                                Ok(0) => break,
+                                Ok(n) => n,
+                                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                                Err(e) => return Err(e.into()),
+                            };
+                            writer.send_raw(FrameKind::PtyOutput, stream_id, &buffer[..n]).await?;
+                        }
+                        writer.send_raw(FrameKind::ShellPrompt, stream_id, &position.to_be_bytes()).await?;
+                        continue;
+                    }
+                    read = master.async_io(Interest::READABLE, |mut file| file.read(&mut buffer)) => read,
+                };
                 match read {
                     Ok(0) => break,
                     Ok(n) => {
@@ -177,7 +213,22 @@ pub(super) async fn run(
         let input_loop = async {
             let mut consumed = 0;
             loop {
-                let Some(incoming) = inbox.recv().await else {
+                let incoming = tokio::select! {
+                    signal = async {
+                        match &bridge {
+                            Some(shell) => shell.signal().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        let shell = bridge.as_mut().expect("active shell gate");
+                        if shell.on_signal(&master, signal?).await? {
+                            prompt_tx.send(shell.received).await.context("PTY output closed")?;
+                        }
+                        continue;
+                    }
+                    incoming = inbox.recv() => incoming,
+                };
+                let Some(incoming) = incoming else {
                     bail!("device connection closed while PTY {stream_id} was active");
                 };
                 if incoming.stream_id != stream_id {
@@ -190,9 +241,20 @@ pub(super) async fn run(
                     && FlowKind::Pty.frame_cost(incoming.kind, incoming.payload.len())? != 0;
                 match incoming.kind {
                     FrameKind::PtyInput => {
-                        write_input(&master, &incoming.payload)
-                            .await
-                            .context("write PTY master")?;
+                        if let Some(shell) = &mut bridge {
+                            shell.raw(&master, &incoming.payload).await?;
+                        } else {
+                            write_input(&master, &incoming.payload)
+                                .await
+                                .context("write PTY master")?;
+                        }
+                    }
+                    FrameKind::ShellLine => {
+                        bridge
+                            .as_mut()
+                            .context("local editing is unavailable")?
+                            .line(&master, &incoming.payload)
+                            .await?;
                     }
                     FrameKind::PtyResize => {
                         let size: PtyResize = decode(&incoming.payload)?;
@@ -201,8 +263,14 @@ pub(super) async fn run(
                     #[cfg(target_os = "android")]
                     FrameKind::PtyComplete => {
                         let request: PtyCompleteRequest = decode(&incoming.payload)?;
+                        let foreground = unsafe { libc::tcgetpgrp(master.as_raw_fd()) };
+                        let completion_pid = if bridge.is_some() && foreground > 0 {
+                            foreground as u32
+                        } else {
+                            pid
+                        };
                         let completion = tokio::task::spawn_blocking(move || {
-                            crate::completion::complete_pty_path(pid, &request)
+                            crate::completion::complete_pty_path(completion_pid, &request)
                         })
                         .await
                         .context("join PTY completion worker")??;
@@ -308,6 +376,7 @@ mod tests {
                 &mut inbox,
                 canceled,
                 "sidewire-test",
+                false,
             );
             let peer = async {
                 assert_eq!(

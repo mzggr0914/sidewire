@@ -7,6 +7,14 @@ pub const STREAM_CANCEL: u64 = 1 << 5;
 pub const FLOW_CONTROL: u64 = 1 << 6;
 pub const PTY_FLOW_CONTROL: u64 = 1 << 7;
 
+pub const INTERACTIVE_SHELL: u64 = 1 << 8;
+
+pub fn supports_interactive_shell(protocol: u16, capabilities: u64) -> bool {
+    crate::protocol_minor(protocol) >= 4
+        && capabilities & INTERACTIVE_SHELL != 0
+        && supports_pty_flow_control(protocol, capabilities)
+}
+
 pub const ALL: u64 = CORE
     | PTY_COMPLETION
     | SECURE_PROXY
@@ -14,7 +22,8 @@ pub const ALL: u64 = CORE
     | HEARTBEAT
     | STREAM_CANCEL
     | FLOW_CONTROL
-    | PTY_FLOW_CONTROL;
+    | PTY_FLOW_CONTROL
+    | INTERACTIVE_SHELL;
 
 pub fn supports_pty_flow_control(protocol: u16, capabilities: u64) -> bool {
     crate::protocol_minor(protocol) >= 3 && capabilities & PTY_FLOW_CONTROL != 0
@@ -31,6 +40,7 @@ pub fn names(capabilities: u64) -> Vec<&'static str> {
         (STREAM_CANCEL, "stream-cancel"),
         (FLOW_CONTROL, "flow-control"),
         (PTY_FLOW_CONTROL, "pty-flow-control"),
+        (INTERACTIVE_SHELL, "interactive-shell"),
     ] {
         if capabilities & bit != 0 {
             out.push(name);

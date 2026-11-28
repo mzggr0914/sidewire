@@ -1,5 +1,7 @@
 use super::*;
 
+#[cfg(windows)]
+mod hybrid;
 #[cfg(any(windows, test))]
 mod windows_console;
 #[cfg(windows)]
@@ -253,6 +255,7 @@ pub(super) async fn run_pty_client(
         rows,
         term: "xterm-256color".into(),
         echo: true,
+        local_edit: false,
     };
     let mut stream = crate::control::connect(control).await?;
     let mut encoded = serde_json::to_vec(&request)?;
@@ -700,6 +703,7 @@ async fn open_pty_control(
     program: String,
     args: Vec<String>,
     echo: bool,
+    local_edit: bool,
 ) -> Result<BufReader<crate::control::ControlStream>> {
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let request = ControlRequest::Pty {
@@ -711,6 +715,7 @@ async fn open_pty_control(
         rows,
         term: "xterm-256color".into(),
         echo,
+        local_edit,
     };
     let mut stream = crate::control::connect(control).await?;
     let mut encoded = serde_json::to_vec(&request)?;
@@ -738,7 +743,7 @@ async fn run_pty_line_client(
     program: String,
     args: Vec<String>,
 ) -> Result<()> {
-    let reader = open_pty_control(control, device, run_as, program, args, false).await?;
+    let reader = open_pty_control(control, device, run_as, program, args, false, false).await?;
     let stream_id = 0x5054_5901;
     let stop = Arc::new(AtomicBool::new(false));
     let display = Arc::new(LineDisplayState::default());
@@ -835,6 +840,7 @@ async fn run_pty_probe(control: &str, device: Option<String>, run_as: RunAs) -> 
         "/system/bin/sh".into(),
         Vec::new(),
         false,
+        false,
     )
     .await?;
     let stream_id = 0x5054_5901;
@@ -901,6 +907,9 @@ pub(super) async fn run_shell(
                 vec!["+o".into(), "emacs".into()],
             )
             .await;
+        }
+        if !_raw {
+            return hybrid::run(control, device, run_as).await;
         }
     }
     // The remote shell owns echo, line editing and completion, as in adb shell.

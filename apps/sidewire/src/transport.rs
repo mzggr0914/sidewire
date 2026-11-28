@@ -210,6 +210,12 @@ impl DeviceTransport {
                     }
                 };
                 let stream_id = frame.stream_id;
+                if frame.kind == FrameKind::ShellActivity
+                    && stream_id == 0
+                    && frame.payload.is_empty()
+                {
+                    continue;
+                }
                 if matches!(
                     frame.kind,
                     FrameKind::StreamWindowUpdate | FrameKind::PtyWindowUpdate

@@ -5,7 +5,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const MAGIC: [u8; 4] = *b"SIDE";
 pub const PROTOCOL_MAJOR: u8 = 1;
-pub const PROTOCOL_MINOR: u8 = 3;
+pub const PROTOCOL_MINOR: u8 = 4;
 pub const VERSION: u16 = ((PROTOCOL_MAJOR as u16) << 8) | PROTOCOL_MINOR as u16;
 
 pub const fn protocol_major(version: u16) -> u8 {
@@ -63,6 +63,10 @@ pub enum FrameKind {
     PtyComplete = 57,
     PtyCompleteResult = 58,
     PtyWindowUpdate = 59,
+    ShellOpen = 64,
+    ShellPrompt = 65,
+    ShellLine = 66,
+    ShellActivity = 67,
     ClipboardGet = 60,
     ClipboardSet = 61,
     ClipboardClear = 62,
@@ -102,6 +106,10 @@ impl TryFrom<u16> for FrameKind {
             57 => Self::PtyComplete,
             58 => Self::PtyCompleteResult,
             59 => Self::PtyWindowUpdate,
+            64 => Self::ShellOpen,
+            65 => Self::ShellPrompt,
+            66 => Self::ShellLine,
+            67 => Self::ShellActivity,
             60 => Self::ClipboardGet,
             61 => Self::ClipboardSet,
             62 => Self::ClipboardClear,
@@ -277,7 +285,7 @@ mod tests {
         let next_major = ((PROTOCOL_MAJOR + 1) as u16) << 8;
         assert!(!protocol_compatible(next_major));
         assert_eq!(negotiated_version(next_major), None);
-        assert_eq!(protocol_label(VERSION), "1.3");
+        assert_eq!(protocol_label(VERSION), "1.4");
     }
 
     #[tokio::test]

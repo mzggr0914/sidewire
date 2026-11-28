@@ -17,6 +17,8 @@ mod completion;
 #[cfg(any(target_os = "android", all(target_os = "linux", test)))]
 mod pty;
 mod security;
+#[cfg(target_os = "android")]
+mod shell_activity;
 mod transport;
 
 use clipboard::{ClipboardHelperManager, SharedClipboardHelper};
@@ -479,7 +481,8 @@ fn daemon_capabilities(clipboard: Option<&SharedClipboardHelper>) -> u64 {
         | sidewire_protocol::capabilities::STREAM_CANCEL
         | sidewire_protocol::capabilities::FLOW_CONTROL;
     if cfg!(target_os = "android") {
-        capabilities |= sidewire_protocol::capabilities::PTY_FLOW_CONTROL;
+        capabilities |= sidewire_protocol::capabilities::PTY_FLOW_CONTROL
+            | sidewire_protocol::capabilities::INTERACTIVE_SHELL;
     }
     if clipboard.is_some() {
         capabilities |= sidewire_protocol::capabilities::CLIPBOARD;
@@ -594,6 +597,10 @@ async fn serve(mut stream: TcpStream, options: ServeOptions) -> Result<()> {
         let _ = established.send(());
     }
 
+    #[cfg(target_os = "android")]
+    let network_shells = stream
+        .local_addr()
+        .is_ok_and(|addr| !addr.ip().is_loopback());
     let (reader_half, writer_half) = stream.into_split();
     let mut reader = SecureFrameReader::new(reader_half, noise.clone());
     let writer = MuxWriter::new(
@@ -603,6 +610,12 @@ async fn serve(mut stream: TcpStream, options: ServeOptions) -> Result<()> {
         supports_flow_control,
         supports_pty_flow_control,
     );
+    let interactive_shell = sidewire_protocol::capabilities::supports_interactive_shell(
+        negotiated_protocol,
+        negotiated_capabilities,
+    );
+    #[cfg(target_os = "android")]
+    let writer = writer.with_shell_activity(interactive_shell && network_shells);
     let routes: StreamRoutes = Arc::new(StdMutex::new(HashMap::new()));
     let cancels: StreamCancels = Arc::new(StdMutex::new(HashMap::new()));
     let proxies = Arc::new(tokio::sync::Mutex::new(HashMap::<
@@ -725,7 +738,9 @@ async fn serve(mut stream: TcpStream, options: ServeOptions) -> Result<()> {
                         writer.finish_stream(stream_id);
                     });
                 }
-                FrameKind::PtyOpen => {
+                FrameKind::PtyOpen | FrameKind::ShellOpen => {
+                    let local_edit = request.kind == FrameKind::ShellOpen;
+                    if local_edit && !interactive_shell { bail!("interactive shell was not negotiated"); }
                     let mut inbox = register_stream(&routes, stream_id).await?;
                     let cancel = register_cancel(&cancels, stream_id).await?;
                     writer.register_flow_stream(stream_id, FlowKind::Pty)?;
@@ -741,6 +756,7 @@ async fn serve(mut stream: TcpStream, options: ServeOptions) -> Result<()> {
                             &mut inbox,
                             cancel,
                             &device_name,
+                            local_edit,
                         )
                         .await;
                         unregister_stream(&routes, stream_id).await;
@@ -1373,17 +1389,29 @@ async fn handle_pty(
     inbox: &mut tokio::sync::mpsc::Receiver<Frame>,
     cancel: tokio::sync::watch::Receiver<bool>,
     device_name: &str,
+    local_edit: bool,
 ) -> Result<()> {
     let request: PtyOpenRequest = decode(payload)?;
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (writer, stream_id, request, inbox, cancel, device_name);
+        let _ = (
+            writer,
+            stream_id,
+            request,
+            inbox,
+            cancel,
+            device_name,
+            local_edit,
+        );
         bail!("PTY is only supported by the Android daemon");
     }
     #[cfg(target_os = "android")]
     {
         let hostname = sanitize_shell_hostname(device_name).unwrap_or_else(android_shell_hostname);
-        pty::run(writer, stream_id, request, inbox, cancel, &hostname).await
+        pty::run(
+            writer, stream_id, request, inbox, cancel, &hostname, local_edit,
+        )
+        .await
     }
 }
 

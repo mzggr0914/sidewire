@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master, codex/windows-pty]
+    branches: [main, master, codex/windows-pty, codex/shell-default]
   pull_request:
 
 permissions:
@@ -93,7 +93,7 @@ jobs:
       - run: cargo test -p sidewire -p sidewire-protocol
       - run: cargo build --release -p sidewire
       - uses: actions/upload-artifact@v7.0.2
-        if: github.ref == 'refs/heads/codex/windows-pty'
+        if: github.ref == 'refs/heads/codex/windows-pty' || github.ref == 'refs/heads/codex/shell-default'
         with:
           name: sidewire-windows-x86_64
           if-no-files-found: error
@@ -170,7 +170,7 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
         run: bash scripts/release.sh --android-only
       - uses: actions/upload-artifact@v7.0.2
-        if: github.ref == 'refs/heads/codex/windows-pty'
+        if: github.ref == 'refs/heads/codex/windows-pty' || github.ref == 'refs/heads/codex/shell-default'
         with:
           name: sidewire-kernelsu-arm64
           if-no-files-found: error

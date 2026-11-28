@@ -1,0 +1,40 @@
+# This file arrives on fd 8 after the target shell identity is selected.
+exec 8<&-
+if [[ -n ${SIDEWIRE_SAVED_ENV-} ]]; then
+    ENV=$SIDEWIRE_SAVED_ENV
+    [[ ! -r $ENV ]] || . "$ENV"
+else
+    unset ENV
+    [[ ! -r /system/etc/mkshrc ]] || . /system/etc/mkshrc
+fi
+unset SIDEWIRE_SAVED_ENV
+set +o emacs
+set +o vi
+stty iutf8 2>/dev/null
+
+# The daemon only queues a private parser token while the shell is stopped
+# here or in __sw_read. It restores the PTY before releasing either gate.
+function __sw_gate {
+    typeset ack
+    builtin unalias __sw_run 2>/dev/null
+    builtin print -nru9 -- P
+    IFS= builtin read -ru9 ack || exit
+}
+function __sw_read {
+    typeset previous=$1 command
+    builtin print -nru9 -- R
+    IFS= builtin read -ru9 command || exit
+    case $command in
+        L*) builtin alias "__sw_run=${command#L}" ;;
+        C) return 130 ;;
+        D) exit "$previous" ;;
+        F) ;;
+        *) exit 1 ;;
+    esac
+    # The internal read is one shell command. Hide its prompt and restore
+    # the real PS1 before the user's command is parsed at top level.
+    __sw_saved_ps1=$PS1
+    PS1='${| PS1=$__sw_saved_ps1; REPLY=; }'
+    return "$previous"
+}
+PS1=$PS1'${| __sw_gate; REPLY=; }'

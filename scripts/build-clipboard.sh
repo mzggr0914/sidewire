@@ -31,9 +31,9 @@ if ! printf '%s  %s\n' "$expected_sha256" "$r8" | sha256sum --check --status; th
 fi
 
 echo "==> Building Android clipboard helper"
-javac -encoding UTF-8 --release 8 -d "$scratch/classes" "$ROOT/android/clipboard/ClipboardHelper.java"
+javac -encoding UTF-8 --release 8 -d "$scratch/classes" "$ROOT"/android/clipboard/*.java
 java -cp "$r8" com.android.tools.r8.D8 --release --min-api 23 --output "$scratch/dex" \
-  "$scratch/classes/com/sidewire/ClipboardHelper.class"
+  "$scratch/classes/com/sidewire/"*.class
 jar --create --file "$scratch/sidewire-clipboard.jar" -C "$scratch/dex" classes.dex
 mv "$scratch/sidewire-clipboard.jar" "$destination"
 echo "$destination"

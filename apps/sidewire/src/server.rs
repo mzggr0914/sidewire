@@ -103,6 +103,8 @@ pub(super) enum ControlRequest {
         rows: u16,
         term: String,
         echo: bool,
+        #[serde(default)]
+        local_edit: bool,
     },
     ClipboardGet {
         device: Option<String>,
@@ -135,6 +137,7 @@ struct PtyControlOptions {
     rows: u16,
     term: String,
     echo: bool,
+    local_edit: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -837,6 +840,7 @@ where
             rows,
             term,
             echo,
+            local_edit,
         } => {
             let options = PtyControlOptions {
                 device,
@@ -847,6 +851,7 @@ where
                 rows,
                 term,
                 echo,
+                local_edit,
             };
             handle_control_pty(reader, &devices, options).await
         }
@@ -931,6 +936,7 @@ where
         rows,
         term,
         echo,
+        local_edit,
     } = options;
     let (_, session) = match resolve_device(devices, device.as_deref()).await {
         Ok(selected) => selected,
@@ -954,8 +960,17 @@ where
         term,
         echo,
     };
+    let open_kind = if local_edit
+        && sidewire_protocol::capabilities::supports_interactive_shell(
+            session.protocol,
+            session.capabilities,
+        ) {
+        FrameKind::ShellOpen
+    } else {
+        FrameKind::PtyOpen
+    };
     device_stream
-        .send(&frame(FrameKind::PtyOpen, stream_id, &request)?)
+        .send(&frame(open_kind, stream_id, &request)?)
         .await?;
     let opened = device_stream.recv().await?;
     match opened.kind {
@@ -995,9 +1010,9 @@ where
         loop {
             match read_frame(&mut local_read).await {
                 Ok(local) => match local.kind {
-                    FrameKind::PtyInput if flow_control => {
+                    FrameKind::PtyInput | FrameKind::ShellLine if flow_control => {
                         for input in local.payload.chunks(PTY_FRAME_BYTES) {
-                            sender.send_raw(FrameKind::PtyInput, input).await?;
+                            sender.send_raw(local.kind, input).await?;
                         }
                     }
                     FrameKind::PtyInput
