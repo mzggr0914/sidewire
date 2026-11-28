@@ -1,4 +1,4 @@
-use super::{open_master, write_input};
+use super::{open_master, output::PromptEvent, write_input};
 use anyhow::{Context, Result, bail};
 use sidewire_protocol::ExecIdentity;
 use std::{
@@ -25,7 +25,8 @@ pub(super) struct ShellBridge {
     control: AsyncFd<File>,
     _control_slave: File,
     main_slave: CString,
-    pub(super) received: u64,
+    received: u64,
+    output: tokio::sync::mpsc::Sender<PromptEvent>,
     driver_at: Option<u64>,
     awaiting_line: bool,
     line_started: bool,
@@ -104,7 +105,11 @@ async fn queue_token(master: &AsyncFd<File>, slave: &File, token: &[u8]) -> Resu
 }
 
 impl ShellBridge {
-    pub(super) fn open(main_slave: &CStr, identity: ExecIdentity) -> Result<(Self, Vec<String>)> {
+    pub(super) fn open(
+        main_slave: &CStr,
+        identity: ExecIdentity,
+        output: tokio::sync::mpsc::Sender<PromptEvent>,
+    ) -> Result<(Self, Vec<String>)> {
         let (control, name) = open_master(80, 24)?;
         let slave = open_slave(&name)?;
         let mut attrs = termios(&slave)?;
@@ -132,6 +137,7 @@ impl ShellBridge {
                 _control_slave: slave,
                 main_slave: main_slave.to_owned(),
                 received: 0,
+                output,
                 driver_at: None,
                 awaiting_line: false,
                 line_started: false,
@@ -155,31 +161,52 @@ impl ShellBridge {
         Ok(byte[0])
     }
 
-    pub(super) async fn on_signal(&mut self, master: &AsyncFd<File>, signal: u8) -> Result<bool> {
+    async fn cancel_capture(&mut self) -> Result<()> {
+        if self.driver_at.take().is_some() {
+            self.output
+                .send(PromptEvent::End(None))
+                .await
+                .context("PTY output closed")?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn on_signal(&mut self, master: &AsyncFd<File>, signal: u8) -> Result<()> {
         match signal {
             b'P' => {
                 self.shell_group = unsafe { libc::tcgetpgrp(master.as_raw_fd()) };
                 let slave = open_slave(&self.main_slave)?;
                 let flags = termios(&slave)?.c_lflag;
-                self.driver_at = None;
+                self.cancel_capture().await?;
                 let queued = readable(&slave)?;
                 if flags & (libc::ICANON | libc::ECHO) == libc::ICANON | libc::ECHO
                     && !std::mem::take(&mut self.partial_input)
                     && !queued
                 {
                     queue_token(master, &slave, b"__sw_read \"$?\" 9<>\"$__sw_tty\"\n").await?;
+                    // mksh is still blocked in the primary prompt expansion. Do not
+                    // release it until the output relay can capture the visible prompt.
+                    let (ack, capturing) = tokio::sync::oneshot::channel();
+                    self.output
+                        .send(PromptEvent::Begin(ack))
+                        .await
+                        .context("PTY output closed")?;
+                    capturing.await.context("PTY output closed before prompt")?;
                     self.driver_at = Some(self.received);
                 }
                 write_input(&self.control, if queued { b"\n" } else { b"show\n" }).await?;
             }
             b'R' if self.driver_at.take() == Some(self.received) => {
                 self.awaiting_line = true;
-                return Ok(true);
+                self.output
+                    .send(PromptEvent::End(Some(self.received)))
+                    .await
+                    .context("PTY output closed")?;
             }
             b'R' => write_input(&self.control, b"F\n").await?,
             _ => bail!("invalid shell prompt gate"),
         }
-        Ok(false)
+        Ok(())
     }
 
     pub(super) async fn raw(
@@ -188,6 +215,7 @@ impl ShellBridge {
         data: &[u8],
         paste: bool,
     ) -> Result<()> {
+        self.cancel_capture().await?;
         self.received = self.received.wrapping_add(data.len() as u64);
         if self.awaiting_line {
             self.awaiting_line = false;
@@ -227,7 +255,6 @@ impl ShellBridge {
             // editor or restarting a partially completed PTY write.
             tokio::select! {
                 signal = self.signal() => {
-                    self.driver_at = None;
                     match signal? {
                         b'P' => {
                             let queued_line = remaining.iter().any(|b| matches!(b,b'\r'|b'\n'));

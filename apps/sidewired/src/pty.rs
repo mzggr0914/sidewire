@@ -1,3 +1,4 @@
+mod output;
 mod shell;
 use crate::{command_for_identity, transport::MuxWriter, wait_for_stream_cancel};
 use anyhow::{Context, Result, bail};
@@ -11,7 +12,7 @@ use sidewire_protocol::{
 use std::{
     ffi::{CStr, CString},
     fs::File,
-    io::{self, Read, Write},
+    io::{self, Write},
     os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd},
     process::Stdio,
 };
@@ -134,8 +135,9 @@ pub(super) async fn run(
     let (master, slave_name) = open_master(request.cols, request.rows)?;
     let interactive =
         request.program == "/system/bin/sh" && request.args.is_empty() && request.echo;
+    let (prompt_tx, prompts) = mpsc::channel(2);
     let (mut bridge, args) = if local_edit && interactive {
-        match ShellBridge::open(&slave_name, request.identity) {
+        match ShellBridge::open(&slave_name, request.identity, prompt_tx) {
             Ok((bridge, args)) => (Some(bridge), args),
             Err(error) => {
                 tracing::warn!(%error, "using native PTY editing");
@@ -162,7 +164,6 @@ pub(super) async fn run(
     let pid = child.id().unwrap_or(0);
     #[cfg(target_os = "android")]
     let _activity = interactive.then(|| writer.shell_lease()).flatten();
-    let (prompt_tx, mut prompts) = mpsc::channel::<u64>(1);
     let flow_control = writer.supports_flow(FlowKind::Pty);
 
     let session = async {
@@ -173,43 +174,7 @@ pub(super) async fn run(
                 &PtyOpenAck { pid },
             )?)
             .await?;
-        let output_loop = async {
-            let mut buffer = [0u8; PTY_FRAME_BYTES];
-            loop {
-                let read = tokio::select! {
-                    biased;
-                    Some(position) = prompts.recv() => {
-                        // The shell wrote its real prompt before it requested local input.
-                        // Finish already queued terminal output before publishing that event.
-                        loop {
-                            let n = match master.get_ref().read(&mut buffer) {
-                                Ok(0) => break,
-                                Ok(n) => n,
-                                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                                Err(e) => return Err(e.into()),
-                            };
-                            writer.send_raw(FrameKind::PtyOutput, stream_id, &buffer[..n]).await?;
-                        }
-                        writer.send_raw(FrameKind::ShellPrompt, stream_id, &position.to_be_bytes()).await?;
-                        continue;
-                    }
-                    read = master.async_io(Interest::READABLE, |mut file| file.read(&mut buffer)) => read,
-                };
-                match read {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        writer
-                            .send_raw(FrameKind::PtyOutput, stream_id, &buffer[..n])
-                            .await?
-                    }
-                    Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error) => return Err(error).context("read PTY master"),
-                }
-            }
-            Ok::<(), anyhow::Error>(())
-        };
+        let output_loop = output::relay(&master, writer, stream_id, prompts);
         let input_loop = async {
             let mut consumed = 0;
             loop {
@@ -221,9 +186,7 @@ pub(super) async fn run(
                         }
                     } => {
                         let shell = bridge.as_mut().expect("active shell gate");
-                        if shell.on_signal(&master, signal?).await? {
-                            prompt_tx.send(shell.received).await.context("PTY output closed")?;
-                        }
+                        shell.on_signal(&master, signal?).await?;
                         continue;
                     }
                     incoming = inbox.recv() => incoming,

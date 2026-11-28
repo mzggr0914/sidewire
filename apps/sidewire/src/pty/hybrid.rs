@@ -519,8 +519,9 @@ pub(super) async fn run(control: &str, device: Option<String>, run_as: RunAs) ->
                     match remote.kind {
                         FrameKind::PtyOutput => terminal.output(&mut out, &remote.payload)?,
                         FrameKind::ShellPrompt => {
-                            let position = remote.payload.as_slice().try_into().context("invalid shell input position")?;
-                            terminal.ready(&mut out, u64::from_be_bytes(position))?;
+                            let (position, prompt) = remote.payload.split_at_checked(8).context("invalid shell input position")?;
+                            terminal.output(&mut out, prompt)?;
+                            terminal.ready(&mut out, u64::from_be_bytes(position.try_into()?))?;
                         }
                         FrameKind::PtyCompleteResult => terminal.completed(&mut out, decode(&remote.payload)?)?,
                         FrameKind::PtyExit => {
