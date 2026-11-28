@@ -10,18 +10,14 @@ use std::{
 };
 use tokio::io::{Interest, unix::AsyncFd};
 
-// Start the standard Android shell under its selected identity. The pipe holds
-// the startup file; fd 0, 1 and 2 still refer to the user's controlling PTY.
+// mksh closes extra descriptors across exec, so its ENV file is created by the
+// selected identity and unlinked immediately upon sourcing. Root uses private KSU storage.
 const START: &str = r#"if [ -z "$KSH_VERSION" ] || [ ! -r "$2" ] || [ ! -w "$2" ]; then exec /system/bin/sh -i; fi
-exec 3<&0
-start_sidewire_shell() {
-    printf '%s\n' "$1" | {
-        exec 8<&0 0<&3 3<&-
-        export SIDEWIRE_SAVED_ENV="$ENV" ENV=/proc/self/fd/8
-        exec /system/bin/sh -i
-    }
-}
-start_sidewire_shell "$1" 9<>"$2"
+case $(/system/bin/id -u) in 0) dir=/data/adb;; *) dir=/data/local/tmp;; esac
+init=$(/system/bin/mktemp "$dir/.sidewire-shell.XXXXXXXX") || exec /system/bin/sh -i
+if ! printf '%s\n' "$1" >"$init"; then /system/bin/rm -f "$init"; exec /system/bin/sh -i; fi
+export SIDEWIRE_SAVED_ENV="$ENV" SIDEWIRE_PROMPT_TTY="$2" ENV="$init"
+exec /system/bin/sh -i
 "#;
 
 pub(super) struct ShellBridge {
@@ -164,7 +160,7 @@ impl ShellBridge {
                     && !std::mem::take(&mut self.partial_input)
                     && !readable(&slave)?
                 {
-                    queue_token(master, &slave, b"__sw_read \"$?\"\n").await?;
+                    queue_token(master, &slave, b"__sw_read \"$?\" 9<>\"$__sw_tty\"\n").await?;
                     self.driver_at = Some(self.received);
                 }
                 write_input(&self.control, b"\n").await?;
@@ -210,6 +206,19 @@ impl ShellBridge {
         self.received = self.received.wrapping_add(bytes.len() as u64);
         if !self.line_started {
             let slave = open_slave(&self.main_slave)?;
+            // A complete canonical line fits in 4096 bytes including LF. Send ordinary
+            // commands straight to the real parser, preserving comments and shell syntax.
+            if bytes.ends_with(b"\n")
+                && bytes.len() <= 4096
+                && bytes[..bytes.len() - 1]
+                    .iter()
+                    .all(|&b| b == b'\t' || (b >= 32 && b != 127))
+            {
+                queue_token(master, &slave, bytes).await?;
+                self.awaiting_line = false;
+                write_input(&self.control, b"F\n").await?;
+                return Ok(());
+            }
             queue_token(master, &slave, b"__sw_run\n").await?;
             write_input(&self.control, b"L").await?;
             self.line_started = true;

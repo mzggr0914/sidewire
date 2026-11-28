@@ -275,7 +275,7 @@ impl Terminal {
             if self.editing {
                 self.line.insert(&text[offset..]);
             } else {
-                raw.extend_from_slice(text[offset..].as_bytes());
+                raw.extend_from_slice(&text.as_bytes()[offset..]);
             }
         }
         self.data(queue, FrameKind::PtyInput, raw);

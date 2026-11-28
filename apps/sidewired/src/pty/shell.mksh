@@ -1,5 +1,5 @@
-# This file arrives on fd 8 after the target shell identity is selected.
-exec 8<&-
+# mksh has opened the per-session startup file under the requested identity.
+/system/bin/rm -f -- "$ENV"
 if [[ -n ${SIDEWIRE_SAVED_ENV-} ]]; then
     ENV=$SIDEWIRE_SAVED_ENV
     [[ ! -r $ENV ]] || . "$ENV"
@@ -7,7 +7,8 @@ else
     unset ENV
     [[ ! -r /system/etc/mkshrc ]] || . /system/etc/mkshrc
 fi
-unset SIDEWIRE_SAVED_ENV
+__sw_tty=$SIDEWIRE_PROMPT_TTY
+unset SIDEWIRE_SAVED_ENV SIDEWIRE_PROMPT_TTY
 set +o emacs
 set +o vi
 stty iutf8 2>/dev/null
@@ -37,4 +38,4 @@ function __sw_read {
     PS1='${| PS1=$__sw_saved_ps1; REPLY=; }'
     return "$previous"
 }
-PS1=$PS1'${| __sw_gate; REPLY=; }'
+PS1=$PS1'${| __sw_gate 9<>"$__sw_tty"; REPLY=; }'

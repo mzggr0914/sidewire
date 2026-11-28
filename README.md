@@ -59,10 +59,7 @@ sidewire shell
 sidewire exec --as root id
 ```
 
-Interactive shells use the Android shell's line editing, history, and Tab completion.
-On Windows, this also keeps pasted input and shell prompts in the same output stream.
-The `--raw` option remains available for compatibility and uses the same interactive mode.
-Protocol 1.3 peers apply flow control to shell input and output during large pastes.
+On Windows Terminal, protocol 1.4 peers edit ordinary command lines locally and hand input back to Android for programs, password reads and continuations. Tab completes against the device. Use `sidewire shell --raw` for native remote editing. While a network shell is open, the device holds a partial wake lock and sends short activity frames. Closing the last shell releases the lock.
 
 ## Android clipboard
 
