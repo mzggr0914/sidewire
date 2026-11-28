@@ -16,10 +16,9 @@ stty iutf8 2>/dev/null
 # The daemon only queues a private parser token while the shell is stopped
 # here or in __sw_read. It restores the PTY before releasing either gate.
 function __sw_gate {
-    typeset ack
     builtin unalias __sw_run 2>/dev/null
     builtin print -nru9 -- P
-    IFS= builtin read -ru9 ack || exit
+    IFS= builtin read -ru9 __sw_show_prompt || exit
 }
 function __sw_read {
     typeset previous=$1 command
@@ -38,4 +37,6 @@ function __sw_read {
     PS1='${| typeset __sw_rc=$?; PS1=$__sw_saved_ps1; REPLY=; return "$__sw_rc"; }'
     return "$previous"
 }
-PS1=$PS1'${| typeset __sw_rc=$?; __sw_gate 9<>"$__sw_tty"; REPLY=; return "$__sw_rc"; }'
+# Queued lines were already echoed by the PTY. Only display a primary
+# prompt when there is no completed command waiting to run.
+PS1='${| typeset __sw_rc=$?; __sw_gate 9<>"$__sw_tty"; REPLY=; return "$__sw_rc"; }${__sw_show_prompt:+'"$PS1"'}'

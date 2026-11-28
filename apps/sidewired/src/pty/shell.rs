@@ -162,14 +162,15 @@ impl ShellBridge {
                 let slave = open_slave(&self.main_slave)?;
                 let flags = termios(&slave)?.c_lflag;
                 self.driver_at = None;
+                let queued = readable(&slave)?;
                 if flags & (libc::ICANON | libc::ECHO) == libc::ICANON | libc::ECHO
                     && !std::mem::take(&mut self.partial_input)
-                    && !readable(&slave)?
+                    && !queued
                 {
                     queue_token(master, &slave, b"__sw_read \"$?\" 9<>\"$__sw_tty\"\n").await?;
                     self.driver_at = Some(self.received);
                 }
-                write_input(&self.control, b"\n").await?;
+                write_input(&self.control, if queued { b"\n" } else { b"show\n" }).await?;
             }
             b'R' if self.driver_at.take() == Some(self.received) => {
                 self.awaiting_line = true;
@@ -228,7 +229,10 @@ impl ShellBridge {
                 signal = self.signal() => {
                     self.driver_at = None;
                     match signal? {
-                        b'P' => write_input(&self.control, b"\n").await?,
+                        b'P' => {
+                            let queued_line = remaining.iter().any(|b| matches!(b,b'\r'|b'\n'));
+                            write_input(&self.control, if queued_line { b"\n" } else { b"show\n" }).await?;
+                        }
                         b'R' => write_input(&self.control, b"F\n").await?,
                         _ => bail!("invalid shell prompt gate during input"),
                     }
